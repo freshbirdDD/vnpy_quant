@@ -21,10 +21,12 @@ from vnpy.trader.engine import MainEngine
 from vnpy.trader.object import HistoryRequest
 from vnpy.trader.constant import Exchange, Interval
 from vnpy.trader.database import get_database
-from vnpy_ctp import CtpGateway
+# from vnpy_ctp import CtpGateway
 from vnpy_ctastrategy import CtaStrategyApp
 from vnpy_ctastrategy.backtesting import BacktestingEngine, OptimizationSetting
-from vnpy_ctastrategy.strategies.jhd_strategy import JhdStrategy  # 修改为你的策略路径
+
+# TODO 在这里import 你的策略，例如MyTurtleStrategy
+from vnpy_ctastrategy.strategies.my_turtle_strategy import MyTurtleStrategy as MyStrategy  # 修改为你的策略路径
 
 
 class BacktestRunner:
@@ -44,7 +46,9 @@ class BacktestRunner:
         # 创建独立的回测引擎
         self.backtesting_engine = BacktestingEngine()
 
-    def configure_backtest(self, start_date=None, end_date=None):
+    def configure_backtest(self, start_date=None, end_date=None, vt_symbol="IF888.CFFEX",
+                           interval=Interval.MINUTE, rate=0.0003, slippage=0.2,
+                           size=300, pricetick=0.2, capital=1_000_000):
         """配置回测参数，明确指定时间范围"""
         print("配置回测参数...")
 
@@ -56,17 +60,19 @@ class BacktestRunner:
             end_date = datetime.now() - timedelta(days=1)
             print(f"未指定结束时间，默认为{end_date}")
 
+
+
         # 设置回测参数
         self.backtesting_engine.set_parameters(
-            vt_symbol="IF888.CFFEX",
-            interval=Interval.MINUTE,
+            vt_symbol=vt_symbol,
+            interval=interval,
             start=start_date,  # 明确指定开始时间
             end=end_date,  # 明确指定结束时间
-            rate=0.0003,
-            slippage=0.2,
-            size=300,
-            pricetick=0.2,
-            capital=1_000_000,
+            rate=rate,
+            slippage=slippage,
+            size=size,
+            pricetick=pricetick,
+            capital=capital,
         )
 
         print(f"✅ 回测时间范围明确指定为:")
@@ -78,15 +84,15 @@ class BacktestRunner:
         print("\n查询指定时间范围的数据...")
 
         try:
-            symbol = "IF888"
-            exchange = Exchange.CFFEX
+            symbol = self.backtesting_engine.symbol
+            exchange = self.backtesting_engine.exchange
 
             # 获取回测引擎配置的时间范围
             start_time = self.backtesting_engine.start
             end_time = self.backtesting_engine.end
 
             print(f"查询条件:")
-            print(f"  合约: {symbol}.{exchange}")
+            print(f"  合约: {symbol}.{exchange.value}")
             print(f"  时间: {start_time} 到 {end_time}")
             print(f"  周期: 1分钟")
 
@@ -440,10 +446,30 @@ def main():
     runner = BacktestRunner()
 
     try:
-        # 1. 配置回测，注意要指定回测数据的时间
-        start_date = datetime(2025, 11, 24)
-        end_date = datetime(2025, 12, 18)
-        runner.configure_backtest(start_date, end_date)
+        # TODO 配置回测参数
+        # 开始日期
+        start_date = datetime(2010, 4, 20)
+        # 结束日期
+        end_date = datetime(2010, 5, 15)
+        # 本地代码
+        vt_symbol = "IF1005.CFFEX"
+        # K线周期
+        interval = Interval.MINUTE
+        # 手续费律
+        rate = 0.000025
+        # 交易滑点
+        slippage = 0.2
+        # 合约乘数
+        size = 300
+        # 价格跳动
+        pricetick = 0.2
+        # 回测资金
+        capital = 1_000_000
+
+        runner.configure_backtest(start_date, end_date, vt_symbol=vt_symbol,
+                                  interval=interval, rate=rate, slippage=slippage,
+                                  size=size, pricetick=pricetick, capital=capital)
+
 
         # 2. 加载指定时间范围的数据
         if not runner.load_data_from_database():
@@ -452,16 +478,17 @@ def main():
             print("2. 将上面的 start_date 和 end_date 调整为数据实际时间")
             return
 
-        # 3. 设置策略参数
+        # TODO 设置策略参数
         strategy_params = {
-            "fast_window": 5,
-            "slow_window": 20,
-            "fixed_size": 1,
+            "entry_window": 20,
+            "exit_window": 10,
+            "atr_window": 20,
+            "fixed_size": 1
         }
 
         # 4. 运行回测（使用你的JhdStrategy类）
         print("\n" + "-"*70)
-        statistics = runner.run_backtest(JhdStrategy, strategy_params)
+        statistics = runner.run_backtest(MyStrategy, strategy_params)
 
         # 5. 显示详细结果
         # runner.show_detailed_results(statistics)
@@ -480,9 +507,5 @@ def main():
 
 
 if __name__ == "__main__":
-    # 注意：这里需要正确导入你的JhdStrategy类
-    # 如果你的策略在别处，修改导入路径，例如：
-    # from my_strategies.jhd_strategy import JhdStrategy
-    # 或者将你的策略类复制到这个文件中
 
     main()
