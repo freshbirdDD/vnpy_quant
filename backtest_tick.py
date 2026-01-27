@@ -550,7 +550,7 @@ def run_tick_backtest(mode, vt_symbol, start_date, end_date):
     runner = BacktestRunner()
 
     try:
-        # 配置回测参数 - 注意：Tick回测通常时间范围较小，因为数据量大
+        # TODO 配置回测参数 - 注意：Tick回测通常时间范围较小，因为数据量大
         interval = Interval.MINUTE  # 对于Tick回测，这个参数不重要
         rate = 0.000025
         slippage = 0.2
@@ -579,7 +579,7 @@ def run_tick_backtest(mode, vt_symbol, start_date, end_date):
             print(f"     时间范围: {start_date} 到 {end_date}")
             return
 
-        # 设置Tick策略参数
+        # TODO 设置Tick策略参数
         strategy_params = {
             "tick_window": 50,
             "spread_threshold": 2.0,
