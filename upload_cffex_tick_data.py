@@ -2,7 +2,7 @@
 import_cffex_tick_data_fixed.py
 vn.py 4.2版本 - 将包含多个CFFEX合约的Tick数据CSV导入数据库
 
-修复版：正确使用TICK_FIELDS映射关系
+修复版：支持单文件或文件夹批量导入
 """
 import pandas as pd
 import numpy as np
@@ -68,46 +68,14 @@ class CFFEXTickDataImporterFixed:
         'SettlementPrice': 'settlement_price',
     }
 
-    def __init__(self, file_path: str, custom_field_mapping: Dict[str, str] = None):
-        """
-        初始化导入器
-
-        Args:
-            file_path: CSV文件路径
-            custom_field_mapping: 自定义字段映射，用于覆盖默认映射
-        """
-        self.file_path = Path(file_path)
-        if not self.file_path.exists():
-            raise FileNotFoundError(f"文件不存在: {self.file_path}")
-
+    def __init__(self):
+        """初始化导入器"""
         self.exchange = Exchange.CFFEX
         self.gateway_name = "TICK_CSV_IMPORT"
         self.database: BaseDatabase = get_database()
 
-        # 更新字段映射（如果提供了自定义映射）
-        if custom_field_mapping:
-            self.TICK_FIELDS.update(custom_field_mapping)
-
-        # 创建反向映射：TickData属性名 -> CSV列名
-        self.reverse_mapping = {v: k for k, v in self.TICK_FIELDS.items()}
-
-        # 统计信息
-        self.stats = {
-            'total_rows': 0,
-            'valid_rows': 0,
-            'invalid_rows': 0,
-            'unique_symbols': set(),
-            'time_range': {'start': None, 'end': None},
-            'saved_ticks': 0,
-            'missing_bid_ask': 0,
-            'missing_last_price': 0,
-            'field_mapping_used': self.TICK_FIELDS.copy()
-        }
-
     def parse_datetime(self, dt_str: str) -> Optional[datetime]:
-        """
-        解析时间字符串为datetime对象
-        """
+        """解析时间字符串为datetime对象"""
         if pd.isna(dt_str) or not isinstance(dt_str, str):
             return None
 
@@ -143,9 +111,7 @@ class CFFEXTickDataImporterFixed:
             return None
 
     def validate_symbol(self, symbol: str) -> Optional[str]:
-        """
-        验证并清理合约代码
-        """
+        """验证并清理合约代码"""
         if pd.isna(symbol) or not isinstance(symbol, str):
             return None
 
@@ -161,105 +127,62 @@ class CFFEXTickDataImporterFixed:
             return symbol
         return None
 
-    def get_csv_column_name(self, tick_attribute: str) -> Optional[str]:
+    def parse_row_to_tick(self, row: pd.Series, index: int, field_mapping: Dict) -> Optional[TickData]:
         """
-        根据TickData属性名获取CSV列名
-
-        Args:
-            tick_attribute: TickData属性名，如 'last_price', 'volume' 等
-
-        Returns:
-            CSV列名，如果未找到映射则返回None
-        """
-        return self.reverse_mapping.get(tick_attribute)
-
-    def parse_row_to_tick(self, row: pd.Series, index: int) -> Optional[TickData]:
-        """
-        将一行数据解析为TickData对象，使用TICK_FIELDS映射关系
+        将一行数据解析为TickData对象
+        注意：如果时间列为空，会返回None，该条tick数据不会被上传
         """
         try:
-            # 1. 获取合约代码和时间（必需字段）
-            symbol_csv_col = self.get_csv_column_name('symbol')
-            datetime_csv_col = self.get_csv_column_name('datetime')
-
-            if not symbol_csv_col or not datetime_csv_col:
-                print(f"行 {index}: 缺少必要的字段映射 (symbol或datetime)")
-                return None
-
-            # 2. 解析合约代码
-            raw_symbol = row.get(symbol_csv_col)
-            symbol = self.validate_symbol(raw_symbol)
+            # 1. 解析合约代码和时间（必需字段）
+            symbol = self.validate_symbol(row.get('InstrumentID'))
             if not symbol:
-                print(f"行 {index}: 无效的合约代码 '{raw_symbol}'")
                 return None
 
-            # 3. 解析时间
-            raw_time = row.get(datetime_csv_col)
+            # 2. 解析时间 - 如果为空或无效，返回None，该条tick不上传
+            raw_time = row.get('UpdateTime')
             dt = self.parse_datetime(raw_time)
-            if not dt:
-                print(f"行 {index}: 无效的时间格式 '{raw_time}'")
+            if not dt:  # 时间列为空，返回None，不上传该条tick
                 return None
 
-            # 4. 创建TickData对象
+            # 3. 创建TickData对象
             tick = TickData(
                 gateway_name=self.gateway_name,
                 symbol=symbol,
                 exchange=self.exchange,
                 datetime=dt,
-                name="",  # 可选的合约名称
+                name="",
             )
 
-            # 5. 使用映射关系设置所有字段
-            for csv_col, tick_attr in self.TICK_FIELDS.items():
-                # 跳过已经处理的字段
-                if tick_attr in ['symbol', 'datetime']:
-                    continue
-
-                # 检查CSV中是否有该列
+            # 4. 使用映射关系设置所有字段
+            for csv_col, tick_attr in field_mapping.items():
                 if csv_col not in row:
                     continue
 
                 value = row[csv_col]
-
-                # 检查是否为有效值
                 if pd.isna(value) or (isinstance(value, (int, float)) and value == 0):
                     continue
 
                 try:
-                    # 尝试转换为浮点数（价格和成交量字段）
                     float_value = float(value)
                     setattr(tick, tick_attr, float_value)
                 except (ValueError, TypeError):
-                    # 如果不是数值，跳过（可能是字符串或其他类型）
                     pass
 
-            # 6. 检查必需的价格字段
-            last_price_csv_col = self.get_csv_column_name('last_price')
-            if last_price_csv_col and last_price_csv_col in row:
-                try:
-                    tick.last_price = float(row[last_price_csv_col])
-                except:
-                    self.stats['missing_last_price'] += 1
-
-            # 如果最新价缺失，尝试从买卖价推算
+            # 5. 检查必需的价格字段
             if not tick.last_price or tick.last_price == 0:
                 if tick.bid_price_1 and tick.bid_price_1 > 0:
                     tick.last_price = tick.bid_price_1
                 elif tick.ask_price_1 and tick.ask_price_1 > 0:
                     tick.last_price = tick.ask_price_1
                 else:
-                    print(f"行 {index}: 缺少价格信息")
-                    self.stats['invalid_rows'] += 1
                     return None
 
-            # 7. 确保买卖盘口有有效值
+            # 6. 确保买卖盘口有有效值
             if not tick.bid_price_1 or tick.bid_price_1 == 0:
                 tick.bid_price_1 = tick.last_price
-                self.stats['missing_bid_ask'] += 1
 
             if not tick.ask_price_1 or tick.ask_price_1 == 0:
                 tick.ask_price_1 = tick.last_price
-                self.stats['missing_bid_ask'] += 1
 
             if not tick.bid_volume_1 or tick.bid_volume_1 == 0:
                 tick.bid_volume_1 = 1
@@ -267,40 +190,16 @@ class CFFEXTickDataImporterFixed:
             if not tick.ask_volume_1 or tick.ask_volume_1 == 0:
                 tick.ask_volume_1 = 1
 
-            # 8. 更新统计信息
-            self.stats['valid_rows'] += 1
-            self.stats['unique_symbols'].add(symbol)
-
-            if not self.stats['time_range']['start'] or dt < self.stats['time_range']['start']:
-                self.stats['time_range']['start'] = dt
-            if not self.stats['time_range']['end'] or dt > self.stats['time_range']['end']:
-                self.stats['time_range']['end'] = dt
-
             return tick
 
-        except Exception as e:
-            print(f"行 {index}: 解析Tick数据错误: {e}")
-            import traceback
-            traceback.print_exc()
-            self.stats['invalid_rows'] += 1
+        except Exception:
             return None
 
-    def detect_csv_fields(self, df: pd.DataFrame) -> Dict[str, str]:
-        """
-        自动检测CSV字段并尝试匹配映射
-
-        Args:
-            df: DataFrame对象
-
-        Returns:
-            检测到的字段映射
-        """
+    def detect_field_mapping(self, df: pd.DataFrame) -> Dict[str, str]:
+        """检测CSV字段并返回映射"""
         detected_mapping = {}
-        available_columns = list(df.columns)
 
-        print(f"CSV可用列: {available_columns}")
-
-        # 常见的中文字段名映射（如果CSV使用中文列名）
+        # 常见的中文字段名映射
         chinese_mapping = {
             '时间': 'UpdateTime',
             '合约代码': 'InstrumentID',
@@ -315,7 +214,6 @@ class CFFEXTickDataImporterFixed:
             '涨停价': 'UpperLimitPrice',
             '跌停价': 'LowerLimitPrice',
             '昨收': 'PreClosePrice',
-            '昨结': 'PreSettlementPrice',
             '开盘价': 'OpenPrice',
             '最高价': 'HighPrice',
             '最低价': 'LowPrice',
@@ -323,311 +221,191 @@ class CFFEXTickDataImporterFixed:
         }
 
         # 首先尝试中文映射
-        for csv_col in available_columns:
+        for csv_col in df.columns:
             if csv_col in chinese_mapping:
                 standard_col = chinese_mapping[csv_col]
                 if standard_col in self.TICK_FIELDS:
                     detected_mapping[standard_col] = self.TICK_FIELDS[standard_col]
-                    print(f"  检测到映射: '{csv_col}' -> {standard_col} -> {self.TICK_FIELDS[standard_col]}")
 
         # 然后尝试直接匹配标准列名
-        for csv_col in available_columns:
+        for csv_col in df.columns:
             if csv_col in self.TICK_FIELDS:
                 detected_mapping[csv_col] = self.TICK_FIELDS[csv_col]
-                print(f"  直接匹配: '{csv_col}' -> {self.TICK_FIELDS[csv_col]}")
 
-        return detected_mapping
+        return detected_mapping or self.TICK_FIELDS.copy()
 
-    def load_and_validate_csv(self) -> pd.DataFrame:
-        """
-        加载CSV文件并进行基本验证
-        """
-        print(f"加载CSV文件: {self.file_path}")
+    def import_file(self, file_path: Path, batch_size: int = 10000) -> Dict:
+        """导入单个文件"""
+        if not file_path.exists():
+            return {'error': f"文件不存在: {file_path}"}
+
+        # 统计信息
+        stats = {
+            'file': str(file_path),
+            'total_rows': 0,
+            'valid_rows': 0,
+            'invalid_rows': 0,
+            'unique_symbols': set(),
+            'saved_ticks': 0,
+        }
 
         try:
-            # 读取CSV，尝试自动检测编码
+            # 读取CSV
             encodings = ['utf-8', 'gbk', 'gb2312', 'utf-8-sig']
             df = None
 
             for encoding in encodings:
                 try:
-                    df = pd.read_csv(self.file_path, encoding=encoding)
-                    print(f"使用编码: {encoding}")
+                    df = pd.read_csv(file_path, encoding=encoding)
                     break
                 except UnicodeDecodeError:
                     continue
 
             if df is None:
-                raise ValueError("无法识别文件编码，请尝试UTF-8或GBK编码")
+                stats['error'] = "无法识别文件编码"
+                return stats
 
-            self.stats['total_rows'] = len(df)
-            print(f"总行数: {self.stats['total_rows']}")
+            stats['total_rows'] = len(df)
 
-            # 显示前几行数据
-            print("\n前3行数据预览:")
-            print(df.head(3).to_string())
-
-            # 显示列信息
-            print(f"\nCSV列信息:")
-            for i, col in enumerate(df.columns):
-                sample_value = df[col].iloc[0] if len(df) > 0 else 'N/A'
-                print(f"  {i+1:2d}. {col:20s} (示例: {str(sample_value)[:30]}...)")
-
-            # 自动检测字段映射
-            print(f"\n🔍 自动检测字段映射...")
-            detected_mapping = self.detect_csv_fields(df)
+            # 检测字段映射
+            field_mapping = self.detect_field_mapping(df)
 
             # 检查必需字段
-            required_mappings = ['symbol', 'datetime', 'last_price']
-            missing_required = []
+            if 'InstrumentID' not in df.columns or 'UpdateTime' not in df.columns:
+                stats['error'] = "CSV缺少必需字段(InstrumentID或UpdateTime)"
+                return stats
 
-            for req_attr in required_mappings:
-                csv_col = self.get_csv_column_name(req_attr)
-                if not csv_col or csv_col not in df.columns:
-                    missing_required.append(req_attr)
+            # 解析数据
+            contract_ticks: Dict[str, List[TickData]] = {}
 
-            if missing_required:
-                print(f"⚠️  警告: 缺少以下必需字段的映射: {missing_required}")
-                print("   请检查CSV文件列名或提供自定义字段映射")
+            for idx, row in df.iterrows():
+                tick = self.parse_row_to_tick(row, idx, field_mapping)
+                if tick:
+                    stats['valid_rows'] += 1
+                    stats['unique_symbols'].add(tick.symbol)
 
-                # 尝试从检测到的映射中查找
-                for req_attr in missing_required:
-                    for csv_col, tick_attr in self.TICK_FIELDS.items():
-                        if tick_attr == req_attr and csv_col in df.columns:
-                            print(f"   找到替代: '{csv_col}' 作为 {req_attr}")
-                            break
+                    if tick.symbol not in contract_ticks:
+                        contract_ticks[tick.symbol] = []
+                    contract_ticks[tick.symbol].append(tick)
+                else:
+                    stats['invalid_rows'] += 1
 
-            return df
+            # 保存数据
+            total_saved = 0
+            for symbol, ticks in contract_ticks.items():
+                # 去重
+                unique_ticks = []
+                seen = set()
+                for tick in ticks:
+                    key = (tick.symbol, tick.datetime)
+                    if key not in seen:
+                        seen.add(key)
+                        unique_ticks.append(tick)
+
+                # 分批保存
+                for i in range(0, len(unique_ticks), batch_size):
+                    batch = unique_ticks[i:i + batch_size]
+                    try:
+                        self.database.save_tick_data(batch)
+                        total_saved += len(batch)
+                    except Exception:
+                        # 尝试逐条保存
+                        for tick in batch:
+                            try:
+                                self.database.save_tick_data([tick])
+                                total_saved += 1
+                            except Exception:
+                                pass
+
+            stats['saved_ticks'] = total_saved
+            stats['unique_symbols'] = list(stats['unique_symbols'])
 
         except Exception as e:
-            print(f"加载CSV文件失败: {e}")
-            raise
+            stats['error'] = str(e)
 
-    def check_duplicate_ticks(self, symbol: str, ticks: List[TickData]) -> List[TickData]:
-        """
-        检查并移除重复的Tick数据（相同symbol和datetime）
-        """
-        if not ticks:
-            return ticks
-
-        # 按时间排序
-        ticks.sort(key=lambda x: x.datetime)
-
-        # 去重
-        unique_ticks = []
-        seen_datetimes = set()
-
-        for tick in ticks:
-            key = (tick.symbol, tick.datetime)
-            if key not in seen_datetimes:
-                seen_datetimes.add(key)
-                unique_ticks.append(tick)
-
-        removed = len(ticks) - len(unique_ticks)
-        if removed > 0:
-            print(f"  移除 {removed} 条重复Tick数据")
-
-        return unique_ticks
-
-    def import_data(self, batch_size: int = 10000, skip_existing: bool = True) -> Dict:
-        """
-        导入Tick数据
-        """
-        print(f"\n开始导入Tick数据...")
-        print(f"批处理大小: {batch_size}")
-        print(f"跳过已存在数据: {skip_existing}")
-        print(f"使用的字段映射: {self.TICK_FIELDS}")
-
-        # 1. 加载CSV
-        df = self.load_and_validate_csv()
-
-        # 检查必需字段是否存在
-        symbol_csv_col = self.get_csv_column_name('symbol')
-        datetime_csv_col = self.get_csv_column_name('datetime')
-
-        if not symbol_csv_col or symbol_csv_col not in df.columns:
-            raise ValueError(f"CSV文件必须包含合约代码列，映射为: {self.get_csv_column_name('symbol')}")
-
-        if not datetime_csv_col or datetime_csv_col not in df.columns:
-            raise ValueError(f"CSV文件必须包含时间列，映射为: {self.get_csv_column_name('datetime')}")
-
-        # 2. 按合约分组解析Tick数据
-        contract_ticks: Dict[str, List[TickData]] = {}
-
-        print(f"\n解析数据并分组...")
-        for idx, row in df.iterrows():
-            # 显示进度
-            if idx % 10000 == 0 and idx > 0:
-                print(f"  已解析 {idx} 行...")
-
-            tick = self.parse_row_to_tick(row, idx)
-            if tick:
-                # 按symbol分组
-                if tick.symbol not in contract_ticks:
-                    contract_ticks[tick.symbol] = []
-                contract_ticks[tick.symbol].append(tick)
-
-        print(f"解析完成，共 {len(contract_ticks)} 个合约")
-
-        # 3. 对每个合约单独处理
-        total_saved = 0
-
-        for symbol, ticks in contract_ticks.items():
-            print(f"\n处理合约: {symbol}")
-            print(f"  原始Tick数: {len(ticks)}")
-
-            # 去重
-            ticks = self.check_duplicate_ticks(symbol, ticks)
-
-            if not ticks:
-                print(f"  ⚠️  没有有效Tick数据")
-                continue
-
-            # 跳过已存在数据（如果需要）
-            # 注意：Tick数据去重通常由数据库的唯一约束处理
-
-            # 4. 分批保存
-            print(f"  准备保存 {len(ticks)} 条Tick数据...")
-            contract_saved = 0
-
-            for i in range(0, len(ticks), batch_size):
-                batch = ticks[i:i + batch_size]
-
-                try:
-                    # 保存Tick数据
-                    self.database.save_tick_data(batch)
-                    contract_saved += len(batch)
-
-                    if (i // batch_size) % 10 == 0 and (i // batch_size) > 0:
-                        print(f"    批次 {i // batch_size + 1}: 已保存 {min(i + batch_size, len(ticks))}/{len(ticks)}")
-
-                except Exception as e:
-                    print(f"    ❌ 批次 {i // batch_size + 1} 保存失败: {e}")
-                    # 尝试逐条保存以找出问题Tick
-                    error_count = 0
-                    for j, tick in enumerate(batch):
-                        try:
-                            self.database.save_tick_data([tick])
-                            contract_saved += 1
-                        except Exception as single_error:
-                            error_count += 1
-                            if error_count <= 5:  # 只显示前5个错误
-                                print(f"      行 {i + j} 失败: {single_error}")
-                                print(f"      失败Tick: {tick.symbol} {tick.datetime} {tick.last_price}")
-
-                    if error_count > 5:
-                        print(f"      还有 {error_count - 5} 个错误未显示...")
-
-            total_saved += contract_saved
-            print(f"  ✅ 合约 {symbol} 保存完成: {contract_saved} 条")
-
-        # 5. 更新统计信息
-        self.stats['saved_ticks'] = total_saved
-        self.stats['unique_symbols'] = set(contract_ticks.keys())
-
-        print(f"\n✅ Tick数据导入完成")
-        print(f"   总保存Tick数: {total_saved} 条")
-        print(f"   涉及合约数: {len(contract_ticks)} 个")
-
-        self.print_statistics()
-
-        return self.stats
-
-    def print_statistics(self):
-        """打印导入统计信息"""
-        print("\n" + "=" * 60)
-        print("📊 Tick数据导入统计信息")
-        print("=" * 60)
-
-        print(f"文件路径: {self.file_path}")
-        print(f"总行数: {self.stats['total_rows']}")
-        print(f"有效Tick数: {self.stats['valid_rows']}")
-        print(f"无效行数: {self.stats['invalid_rows']}")
-        print(f"缺少买卖盘口数: {self.stats['missing_bid_ask']}")
-        print(f"缺少最新价数: {self.stats['missing_last_price']}")
-
-        if self.stats['unique_symbols']:
-            print(f"合约数量: {len(self.stats['unique_symbols'])}")
-            print(f"合约列表: {sorted(self.stats['unique_symbols'])}")
-
-        if self.stats['time_range']['start'] and self.stats['time_range']['end']:
-            print(f"时间范围: {self.stats['time_range']['start']} 到 {self.stats['time_range']['end']}")
-
-        print(f"保存Tick数: {self.stats['saved_ticks']}")
-
-        # 显示使用的字段映射
-        print(f"\n使用的字段映射:")
-        for csv_col, tick_attr in self.stats['field_mapping_used'].items():
-            print(f"  {csv_col:20s} -> {tick_attr}")
-
-        print("=" * 60)
+        return stats
 
 
 def main():
     """主函数"""
     import argparse
     import sys
-    import json
 
     parser = argparse.ArgumentParser(description='导入CFFEX多合约Tick数据到vn.py数据库')
-    parser.add_argument('--file', type=str, required=True, help='CSV文件路径')
+    parser.add_argument('--path', type=str, required=True, help='CSV文件路径或包含CSV文件的文件夹路径')
     parser.add_argument('--batch-size', type=int, default=10000, help='批处理大小')
-    parser.add_argument('--no-skip', action='store_true', help='不跳过已存在的数据（默认跳过）')
-    parser.add_argument('--verify', action='store_true', help='导入后验证数据')
-    parser.add_argument('--mapping-file', type=str, help='自定义字段映射JSON文件')
 
     args = parser.parse_args()
 
     try:
-        # 加载自定义字段映射（如果有）
-        custom_mapping = {}
-        if args.mapping_file:
-            with open(args.mapping_file, 'r', encoding='utf-8') as f:
-                custom_mapping = json.load(f)
-            print(f"加载自定义字段映射: {custom_mapping}")
-
         # 创建导入器
-        importer = CFFEXTickDataImporterFixed(
-            file_path=args.file,
-            custom_field_mapping=custom_mapping
-        )
+        importer = CFFEXTickDataImporterFixed()
 
-        # 导入数据
-        stats = importer.import_data(
-            batch_size=args.batch_size,
-            skip_existing=not args.no_skip
-        )
+        path = Path(args.path)
+        all_stats = []
 
-        # 验证数据（可选）
-        if args.verify and stats['saved_ticks'] > 0:
-            # 查询数据库验证
-            from vnpy.trader.database import get_database
-            database = get_database()
+        if path.is_file():
+            # 处理单个文件
+            print(f"处理文件: {path}")
+            stats = importer.import_file(path, batch_size=args.batch_size)
+            all_stats.append(stats)
 
-            # 查询第一个合约的数据作为验证
-            if stats['unique_symbols']:
-                sample_symbol = list(stats['unique_symbols'])[0]
-                try:
-                    ticks = database.load_tick_data(
-                        symbol=sample_symbol,
-                        exchange=importer.exchange,
-                        start=stats['time_range']['start'],
-                        end=stats['time_range']['end'],
-                    )
+        elif path.is_dir():
+            # 处理文件夹下所有CSV文件
+            print(f"处理文件夹: {path}")
+            csv_files = list(path.glob("*.csv"))
+            if not csv_files:
+                print(f"文件夹中没有CSV文件: {path}")
+                sys.exit(1)
 
-                    ticks = ticks[:3]
+            print(f"找到 {len(csv_files)} 个CSV文件")
 
-                    if ticks:
-                        print(f"\n✅ 验证成功: 查询到 {sample_symbol} 的 {len(ticks)} 条Tick数据")
-                        for i, tick in enumerate(ticks):
-                            print(f"  {i+1}. {tick.datetime}: 最新价:{tick.last_price:.2f}")
-                    else:
-                        print(f"⚠️  验证警告: 未查询到 {sample_symbol} 的数据")
+            for i, csv_file in enumerate(csv_files, 1):
+                print(f"\n[{i}/{len(csv_files)}] 处理文件: {csv_file.name}")
+                stats = importer.import_file(csv_file, batch_size=args.batch_size)
+                all_stats.append(stats)
 
-                except Exception as e:
-                    print(f"⚠️  验证时出错: {e}")
+        else:
+            print(f"路径不存在: {path}")
+            sys.exit(1)
 
-        print(f"\n🎉 Tick数据导入完成!")
+        # 打印汇总统计
+        print("\n" + "=" * 60)
+        print("📊 导入汇总统计")
+        print("=" * 60)
+
+        total_files = len(all_stats)
+        successful_files = 0
+        total_rows = 0
+        total_valid = 0
+        total_invalid = 0
+        total_saved = 0
+        all_symbols = set()
+
+        for stats in all_stats:
+            if 'error' in stats:
+                print(f"❌ {stats['file']}: {stats['error']}")
+            else:
+                successful_files += 1
+                total_rows += stats['total_rows']
+                total_valid += stats['valid_rows']
+                total_invalid += stats['invalid_rows']
+                total_saved += stats['saved_ticks']
+                all_symbols.update(stats['unique_symbols'])
+
+                print(f"✅ {Path(stats['file']).name}: "
+                      f"行数:{stats['total_rows']}, "
+                      f"有效:{stats['valid_rows']}, "
+                      f"保存:{stats['saved_ticks']}, "
+                      f"合约:{len(stats['unique_symbols'])}")
+
+        print(f"\n总计: {successful_files}/{total_files} 个文件成功")
+        print(f"总行数: {total_rows}")
+        print(f"有效Tick数: {total_valid}")
+        print(f"无效行数: {total_invalid}")
+        print(f"保存Tick数: {total_saved}")
+        print(f"合约列表: {sorted(all_symbols)}")
+        print("=" * 60)
 
     except Exception as e:
         print(f"❌ 导入失败: {e}")
@@ -638,8 +416,6 @@ def main():
 
 if __name__ == "__main__":
     # 示例用法:
-    # python import_cffex_tick_data_fixed.py --file your_tick_data.csv
-    # python import_cffex_tick_data_fixed.py --file your_tick_data.csv --batch-size 5000 --verify
-    # python import_cffex_tick_data_fixed.py --file your_tick_data.csv --mapping-file custom_mapping.json
-
+    # python import_cffex_tick_data_fixed.py --path tick_data.csv (单文件)
+    # python import_cffex_tick_data_fixed.py --path ./tick_folder (文件夹)
     main()
