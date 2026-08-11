@@ -1,5 +1,5 @@
 """
-GateMoudleStrategy_V09  (vn.py 4.3.x / vnpy_ctastrategy)
+GateModuleStrategy_V09  (vn.py 4.3.x / vnpy_ctastrategy)
 =========================================================
 目标：实现全新的 Gate 逻辑（GateOn / ExecOK / Panic 三线分权），并加入更易触发的动态 ExecOK 分档；并保留 StepA/StepB 扫描所需的
 gate_bucket / gate_opp / gate_diag / gate_keep_diag.json 输出能力。
@@ -144,9 +144,9 @@ class _OppWindow:
         self.opp_forced = opp_forced if opp_forced is not None else {}
 
 
-class GateMoudleStrategy_V09(CtaTemplate):
+class GateModuleStrategy_V09(CtaTemplate):
     """
-    GateMoudleStrategy_V09
+    GateModuleStrategy_V09
 
     重点：实现 Gate v2 状态机 + opp/bucket/diag 输出。
     """
@@ -540,11 +540,11 @@ class GateMoudleStrategy_V09(CtaTemplate):
                 )
 
     def on_init(self) -> None:
-        self.write_log("GateMoudleStrategy_V09 init")
+        self.write_log("GateModuleStrategy_V09 init")
         self._open_gate_diag_file()
 
     def on_start(self) -> None:
-        self.write_log("GateMoudleStrategy_V09 start")
+        self.write_log("GateModuleStrategy_V09 start")
 
     def on_stop(self) -> None:
         # flush minute diag
@@ -560,7 +560,7 @@ class GateMoudleStrategy_V09(CtaTemplate):
         self._write_gate_probe()
         self._keep_diag_dump()
 
-        self.write_log("GateMoudleStrategy_V09 stop")
+        self.write_log("GateModuleStrategy_V09 stop")
 
     # -----------------------------
     # vn.py callbacks (unused in scan-only mode)
@@ -1814,7 +1814,7 @@ class GateMoudleStrategy_V09(CtaTemplate):
             summary = self._build_gate_summary()
             payload = {
                 "tag": self._build_tag(),
-                "strategy": "GateMoudleStrategy_V09",
+                "strategy": "GateModuleStrategy_V09",
                 "summary": summary,
                 "consistency": {
                     "opp_summary_exec_mismatch": int((float(summary.get("gate_exec_ok_starts", 0)) > 0) and (int(summary.get("exec_ok_in_gate_ticks", 0)) == 0)),
