@@ -26,8 +26,8 @@ from vnpy_ctastrategy.backtesting import BacktestingEngine, OptimizationSetting
 
 # TODO 在这里import 你的策略，例如MyTurtleStrategy
 # from vnpy_ctastrategy.strategies.my_turtle_strategy import MyTurtleStrategy as MyStrategy  # 修改为你的策略路径
-from vnpy_ctastrategy.strategies.my_turtle_strategy_v2 import MyTurtleStrategyV2 as MyBarStrategy
-from vnpy_ctastrategy.strategies.GateMoudleStrategy_ModuleA_MidCoreV2_clean import (
+# from vnpy_ctastrategy.strategies.my_turtle_strategy_v2 import MyTurtleStrategyV2 as MyBarStrategy
+from strategies.GateMoudleStrategy_ModuleA_MidCoreV2_clean import (
     GateMoudleStrategy_ModuleA_MidCoreV2 as MyTickStrategy
 )
 
