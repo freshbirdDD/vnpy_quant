@@ -1,6 +1,12 @@
 """
 import_cffex_tick_data_fixed.py
-vn.py 4.2版本 - 将包含多个CFFEX合约的Tick数据CSV导入数据库
+vn.py 4.2版本
+
+- 将包含多个CFFEX合约的Tick数据CSV导入数据库， 这里的Tick数据原始格式是网上购买的版本，经过自行日期处理
+- 注意这里实质上有三套字段映射
+  - 输入文件的原始字段
+  - 中间正式字段
+  - vnpy内置字段
 
 修复版：支持单文件或文件夹批量导入
 """
@@ -15,58 +21,110 @@ from vnpy.trader.database import BaseDatabase, get_database
 
 
 class CFFEXTickDataImporterFixed:
-    """CFFEX交易所多合约Tick数据导入器 (修复版)"""
+    """韩喆给的数据"""
 
-    # CSV列名到TickData属性名的映射
+
     TICK_FIELDS = {
         # 必需字段
-        'UpdateTime': 'datetime',           # 映射到TickData.datetime (需要转换为datetime对象)
-        'InstrumentID': 'symbol',           # 映射到TickData.symbol
+        'datetime': 'datetime',  # 映射到TickData.datetime (需要转换为datetime对象)
+        'instrumentID': 'symbol',  # 映射到TickData.symbol
 
         # 价格和成交量字段
-        'LastPrice': 'last_price',
-        'Volume': 'volume',
-        'Turnover': 'turnover',
-        'OpenInterest': 'open_interest',
+        'lastPrice': 'last_price',
+        'volume': 'volume',
+        'turnover': 'turnover',
+        'openInterest': 'open_interest',
 
         # 买卖盘口字段
-        'BidPrice1': 'bid_price_1',
-        'BidVolume1': 'bid_volume_1',
-        'AskPrice1': 'ask_price_1',
-        'AskVolume1': 'ask_volume_1',
+        'bidPrice1': 'bid_price_1',
+        'bidVolume1': 'bid_volume_1',
+        'askPrice1': 'ask_price_1',
+        'askVolume1': 'ask_volume_1',
 
         # 其他价格档位
-        'BidPrice2': 'bid_price_2',
-        'BidVolume2': 'bid_volume_2',
-        'AskPrice2': 'ask_price_2',
-        'AskVolume2': 'ask_volume_2',
+        'bidPrice2': 'bid_price_2',
+        'bidVolume2': 'bid_volume_2',
+        'askPrice2': 'ask_price_2',
+        'askVolume2': 'ask_volume_2',
 
-        'BidPrice3': 'bid_price_3',
-        'BidVolume3': 'bid_volume_3',
-        'AskPrice3': 'ask_price_3',
-        'AskVolume3': 'ask_volume_3',
+        'bidPrice3': 'bid_price_3',
+        'bidVolume3': 'bid_volume_3',
+        'askPrice3': 'ask_price_3',
+        'askVolume3': 'ask_volume_3',
 
-        'BidPrice4': 'bid_price_4',
-        'BidVolume4': 'bid_volume_4',
-        'AskPrice4': 'ask_price_4',
-        'AskVolume4': 'ask_volume_4',
+        'bidPrice4': 'bid_price_4',
+        'bidVolume4': 'bid_volume_4',
+        'askPrice4': 'ask_price_4',
+        'askVolume4': 'ask_volume_4',
 
-        'BidPrice5': 'bid_price_5',
-        'BidVolume5': 'bid_volume_5',
-        'AskPrice5': 'ask_price_5',
-        'AskVolume5': 'ask_volume_5',
+        'bidPrice5': 'bid_price_5',
+        'bidVolume5': 'bid_volume_5',
+        'askPrice5': 'ask_price_5',
+        'askVolume5': 'ask_volume_5',
 
         # 其他价格字段
-        'UpperLimitPrice': 'limit_up',
-        'LowerLimitPrice': 'limit_down',
-        'PreClosePrice': 'pre_close',
+        'upperLimitPrice': 'limit_up',
+        'lowerLimitPrice': 'limit_down',
+        'preClosePrice': 'pre_close',
         # ToDo 暂时先注释掉，DB tick data里没有这个字段
-        # 'PreSettlementPrice': 'pre_settlement',
-        'OpenPrice': 'open_price',
-        'HighPrice': 'high_price',
-        'LowPrice': 'low_price',
-        'SettlementPrice': 'settlement_price',
+        # 'settlement_price': 'pre_settlement',
+        'openPrice': 'open_price',
+        'highestPrice': 'high_price',
+        'lowestPrice': 'low_price',
+        'settlementPrice': 'settlement_price',
     }
+
+
+    # CSV列名到TickData属性名的映射
+    # TICK_FIELDS = {
+    #     # 必需字段
+    #     'UpdateTime': 'datetime',           # 映射到TickData.datetime (需要转换为datetime对象)
+    #     'InstrumentID': 'symbol',           # 映射到TickData.symbol
+    #
+    #     # 价格和成交量字段
+    #     'LastPrice': 'last_price',
+    #     'Volume': 'volume',
+    #     'Turnover': 'turnover',
+    #     'OpenInterest': 'open_interest',
+    #
+    #     # 买卖盘口字段
+    #     'BidPrice1': 'bid_price_1',
+    #     'BidVolume1': 'bid_volume_1',
+    #     'AskPrice1': 'ask_price_1',
+    #     'AskVolume1': 'ask_volume_1',
+    #
+    #     # 其他价格档位
+    #     'BidPrice2': 'bid_price_2',
+    #     'BidVolume2': 'bid_volume_2',
+    #     'AskPrice2': 'ask_price_2',
+    #     'AskVolume2': 'ask_volume_2',
+    #
+    #     'BidPrice3': 'bid_price_3',
+    #     'BidVolume3': 'bid_volume_3',
+    #     'AskPrice3': 'ask_price_3',
+    #     'AskVolume3': 'ask_volume_3',
+    #
+    #     'BidPrice4': 'bid_price_4',
+    #     'BidVolume4': 'bid_volume_4',
+    #     'AskPrice4': 'ask_price_4',
+    #     'AskVolume4': 'ask_volume_4',
+    #
+    #     'BidPrice5': 'bid_price_5',
+    #     'BidVolume5': 'bid_volume_5',
+    #     'AskPrice5': 'ask_price_5',
+    #     'AskVolume5': 'ask_volume_5',
+    #
+    #     # 其他价格字段
+    #     'UpperLimitPrice': 'limit_up',
+    #     'LowerLimitPrice': 'limit_down',
+    #     'PreClosePrice': 'pre_close',
+    #     # ToDo 暂时先注释掉，DB tick data里没有这个字段
+    #     # 'PreSettlementPrice': 'pre_settlement',
+    #     'OpenPrice': 'open_price',
+    #     'HighPrice': 'high_price',
+    #     'LowPrice': 'low_price',
+    #     'SettlementPrice': 'settlement_price',
+    # }
 
     def __init__(self):
         """初始化导入器"""
@@ -134,12 +192,14 @@ class CFFEXTickDataImporterFixed:
         """
         try:
             # 1. 解析合约代码和时间（必需字段）
-            symbol = self.validate_symbol(row.get('InstrumentID'))
+            # TODO hardcode
+            symbol = self.validate_symbol(row.get('instrumentID'))
             if not symbol:
                 return None
 
             # 2. 解析时间 - 如果为空或无效，返回None，该条tick不上传
-            raw_time = row.get('UpdateTime')
+            # TODO hardcode
+            raw_time = row.get('datetime')
             dt = self.parse_datetime(raw_time)
             if not dt:  # 时间列为空，返回None，不上传该条tick
                 return None
@@ -200,6 +260,7 @@ class CFFEXTickDataImporterFixed:
         detected_mapping = {}
 
         # 常见的中文字段名映射
+        # TODO 这里有bug， 原来的映射表改了之后，这里没对应上
         chinese_mapping = {
             '时间': 'UpdateTime',
             '合约代码': 'InstrumentID',
@@ -227,7 +288,7 @@ class CFFEXTickDataImporterFixed:
                 if standard_col in self.TICK_FIELDS:
                     detected_mapping[standard_col] = self.TICK_FIELDS[standard_col]
 
-        # 然后尝试直接匹配标准列名
+        # 然后尝试直接匹配自定义标准列名
         for csv_col in df.columns:
             if csv_col in self.TICK_FIELDS:
                 detected_mapping[csv_col] = self.TICK_FIELDS[csv_col]
@@ -271,9 +332,9 @@ class CFFEXTickDataImporterFixed:
             field_mapping = self.detect_field_mapping(df)
 
             # 检查必需字段
-            if 'InstrumentID' not in df.columns or 'UpdateTime' not in df.columns:
-                stats['error'] = "CSV缺少必需字段(InstrumentID或UpdateTime)"
-                return stats
+            # if 'InstrumentID' not in df.columns or 'UpdateTime' not in df.columns:
+            #     stats['error'] = "CSV缺少必需字段(InstrumentID或UpdateTime)"
+            #     return stats
 
             # 解析数据
             contract_ticks: Dict[str, List[TickData]] = {}

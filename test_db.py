@@ -4,11 +4,23 @@ from vnpy.trader.constant import Interval,Exchange
 from vnpy.trader.database import BaseDatabase, get_database
 
 db = get_database()
+db.delete_tick_data(
+    symbol="IF2406",
+    exchange=Exchange.CFFEX
+)
 
-bar1 = db.load_bar_data(symbol='IF1005', exchange=Exchange.CFFEX, interval=Interval.MINUTE, start=datetime(2010, 4, 16), end=datetime(2010, 6, 9))
-print(len(bar1))
+tick1 = db.load_tick_data(
+    symbol='IF2406',
+    exchange=Exchange.CFFEX,
+    start=datetime(2020, 1, 1),
+    end=datetime(2025, 2, 1),
+)
 
-print(len(bar1))
+print(len(tick1))
+# bar1 = db.load_bar_data(symbol='IF1005', exchange=Exchange.CFFEX, interval=Interval.MINUTE, start=datetime(2010, 4, 16), end=datetime(2010, 6, 9))
+# print(len(bar1))
+#
+# print(len(bar1))
 
 
 # import os

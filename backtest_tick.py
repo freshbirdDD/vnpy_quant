@@ -27,7 +27,9 @@ from vnpy_ctastrategy.backtesting import BacktestingEngine, OptimizationSetting
 # TODO 在这里import 你的策略，例如MyTurtleStrategy
 # from vnpy_ctastrategy.strategies.my_turtle_strategy import MyTurtleStrategy as MyStrategy  # 修改为你的策略路径
 from vnpy_ctastrategy.strategies.my_turtle_strategy_v2 import MyTurtleStrategyV2 as MyBarStrategy
-from vnpy_ctastrategy.strategies.simple_tick_strategy import SimpleTickStrategy as MyTickStrategy
+from vnpy_ctastrategy.strategies.GateMoudleStrategy_ModuleA_MidCoreV2_clean import (
+    GateMoudleStrategy_ModuleA_MidCoreV2 as MyTickStrategy
+)
 
 
 class BacktestRunner:
@@ -581,11 +583,11 @@ def run_tick_backtest(mode, vt_symbol, start_date, end_date):
 
         # TODO 设置Tick策略参数
         strategy_params = {
-            "tick_window": 50,
-            "spread_threshold": 2.0,
-            "stop_loss": 10.0,
-            "take_profit": 20.0,
-            "fixed_size": 1
+            "output_event_csv": "./output/events.csv",
+            "output_meta_json": "./output/meta.json",
+            "output_event_enriched_csv": "./output/events_enriched.csv",
+            "output_trade_csv": "./output/trades.csv",
+            "output_shadow_trade_csv": "./output/shadow_trades.csv",
         }
 
         # 运行回测
