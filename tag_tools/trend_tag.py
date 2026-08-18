@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import os
 
 def calc_linear_efficiency(prices):
     """
@@ -437,23 +438,33 @@ if __name__ == "__main__":
     year = 2024
     trading_day = "0104"
     DATA_PATH = f"/Users/jinhongdou/股指/product=IF/year={year}/trading_day={year}{trading_day}/data.parquet"
+    instrument = "IF2403"
+
     df = pd.read_parquet(DATA_PATH)
+    df = df[df["instrument"] == instrument]
+    # 去掉开盘前字段
+    df = df[df["session"] != 'PREOPEN']
 
-    # labeler = TrendLabeler(min_return_tick=0.2, path_efficiency_threshold=0.1)
-    # df = labeler.label(df)
+    # 区分上午下午
+    # for session in {"AM", "PM"}:
+    for session in {"AM"}:
+        df = df[df["session"] == session]
+        labeler = TrendLabeler(min_return_tick=0.2, path_efficiency_threshold=0.1)
+        # df = labeler.label(df)
 
-    dist = analyze_trend_distribution(
-        df,
-        window_seconds=10,
-        stride_seconds=0.5,
-        # min_return_tick=30
-    )
-
-    for k, v in dist.items():
-        print(
-            k,
-            np.percentile(
-                v,
-                [50, 90, 95, 99]
-            )
+        dist = analyze_trend_distribution(
+            df,
+            window_seconds=10,
+            stride_seconds=0.5,
+            # min_return_tick=30
         )
+
+        for k, v in dist.items():
+            print(
+                k,
+                np.percentile(
+                    v,
+                    [50, 90, 95, 99]
+                )
+            )
+
