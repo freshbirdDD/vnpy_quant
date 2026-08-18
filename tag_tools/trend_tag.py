@@ -65,6 +65,8 @@ def calc_path_efficiency(prices):
     return displacement / path
 
 
+
+
 def analyze_trend_distribution(
     df,
     window_seconds=10,
@@ -74,32 +76,21 @@ def analyze_trend_distribution(
     min_return_tick=0.0
 ):
     """
-    统计一天tick数据中的趋势指标分布
-
-    参数:
-        df:
-            包含last_price
-
-        window_seconds:
-            观察窗口长度
-
-        step_seconds:
-            tick间隔
-
-    返回:
-        dict:
-            三个指标数组
+    基于真实时间窗口统计tick趋势指标分布
     """
-
-    prices = df["last_price"].values
 
     df = (
         df.sort_values("exchange_ts")
         .reset_index(drop=True)
     )
 
-    times = df["exchange_ts"].reset_index(drop=True)
+    times = df["exchange_ts"]
     prices = df["last_price"].values
+
+
+    if len(df) < 2:
+        return {}
+
 
     window_delta = pd.Timedelta(
         seconds=window_seconds
@@ -115,64 +106,71 @@ def analyze_trend_distribution(
     scope_list = []
     return_list = []
 
-    start_time = times.iloc[0]
 
+    start_time = times.iloc[0]
     end_time = times.iloc[-1]
 
     current_time = start_time
 
+
     while current_time + window_delta <= end_time:
 
         end_window_time = (
-                current_time + window_delta
+            current_time + window_delta
         )
 
         mask = (
-                (times >= current_time)
-                &
-                (times <= end_window_time)
-        )
-
-        window = prices[mask]
-
-        if len(window) < 2:
-            current_time += step_delta
-            continue
-
-        # 可选的大波动窗口过滤
-        return_tick = abs(window[-1] - window[0]) / tick_size
-        if return_tick < min_return_tick:
-            continue
-
-        path_eff = calc_path_efficiency(
-            window
-        )
-
-        linear_R2, scope = calc_linear_efficiency(
-            window
+            (times >= current_time)
+            &
+            (times <= end_window_time)
         )
 
 
-        ret_tick = (
-            abs(window[-1]-window[0])
-            /
-            tick_size
-        )
+        window = prices[
+            mask.values
+        ]
 
 
-        path_eff_list.append(
-            path_eff
-        )
+        if len(window) >= 2:
 
-        linear_R2_list.append(
-            linear_R2
-        )
-        scope_list.append(
-            scope
-        )
-        return_list.append(
-            ret_tick
-        )
+            return_tick = (
+                abs(window[-1] - window[0])
+                /
+                tick_size
+            )
+
+
+            if return_tick >= min_return_tick:
+
+                path_eff = calc_path_efficiency(
+                    window
+                )
+
+                linear_R2, scope = calc_linear_efficiency(
+                    window
+                )
+
+
+                path_eff_list.append(
+                    path_eff
+                )
+
+                linear_R2_list.append(
+                    linear_R2
+                )
+
+                scope_list.append(
+                    scope
+                )
+
+                return_list.append(
+                    return_tick
+                )
+
+
+        # 无论是否continue，都推进窗口
+        current_time += step_delta
+
 
 
     path_eff_arr = np.array(
@@ -182,14 +180,17 @@ def analyze_trend_distribution(
     linear_R2_arr = np.array(
         linear_R2_list
     )
-    scope_arr = np.array(scope_list)
+
+    scope_arr = np.array(
+        scope_list
+    )
+
     return_arr = np.array(
         return_list
     )
 
 
     result = {
-
         "path_efficiency": path_eff_arr,
         "linear_R2": linear_R2_arr,
         "scope": scope_arr,
@@ -197,48 +198,35 @@ def analyze_trend_distribution(
     }
 
 
-    # 打印范围
-
-    print(
-        "path_efficiency:"
-    )
+    print("path_efficiency:")
     print(
         np.min(path_eff_arr),
         np.max(path_eff_arr)
     )
 
-
-    print(
-        "\nlinear_R2:"
-    )
+    print("\nlinear_R2:")
     print(
         np.min(linear_R2_arr),
         np.max(linear_R2_arr)
     )
 
-    print(
-        "\nscope:"
-    )
+    print("\nscope:")
     print(
         np.min(scope_arr),
         np.max(scope_arr)
     )
 
-    print(
-        "\nreturn_tick:"
-    )
+    print("\nreturn_tick:")
     print(
         np.min(return_arr),
         np.max(return_arr)
     )
 
 
-    # 画分布
-
     fig, axes = plt.subplots(
         1,
         3,
-        figsize=(18, 5)
+        figsize=(18,5)
     )
 
 
@@ -268,12 +256,11 @@ def analyze_trend_distribution(
     )
 
     axes[2].set_title(
-        "Return (tick)"
+        "Return Tick"
     )
 
 
     plt.tight_layout()
-
     plt.show()
 
 
@@ -492,4 +479,5 @@ if __name__ == "__main__":
                     [50, 90, 95, 99]
                 )
             )
+
 
