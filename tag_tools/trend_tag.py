@@ -98,17 +98,15 @@ def analyze_trend_distribution(
         .reset_index(drop=True)
     )
 
-    times = df["exchange_ts"].values
+    times = df["exchange_ts"].reset_index(drop=True)
     prices = df["last_price"].values
 
-    window_delta = np.timedelta64(
-        window_seconds,
-        "s"
+    window_delta = pd.Timedelta(
+        seconds=window_seconds
     )
 
-    step_delta = np.timedelta64(
-        step_seconds,
-        "s"
+    step_delta = pd.Timedelta(
+        seconds=step_seconds
     )
 
 
@@ -117,9 +115,9 @@ def analyze_trend_distribution(
     scope_list = []
     return_list = []
 
-    start_time = times[0]
+    start_time = times.iloc[0]
 
-    end_time = times[-1]
+    end_time = times.iloc[-1]
 
     current_time = start_time
 
