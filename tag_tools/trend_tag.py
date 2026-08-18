@@ -68,10 +68,10 @@ def calc_path_efficiency(prices):
 def analyze_trend_distribution(
     df,
     window_seconds=10,
-    stride_seconds=0.5,
+    step_seconds=0.5,
     tick_size=0.2,
     bins=50,
-    min_return_tick = 0.0
+    min_return_tick=0.0
 ):
     """
     统计一天tick数据中的趋势指标分布
@@ -83,7 +83,7 @@ def analyze_trend_distribution(
         window_seconds:
             观察窗口长度
 
-        stride_seconds:
+        step_seconds:
             tick间隔
 
     返回:
@@ -93,12 +93,23 @@ def analyze_trend_distribution(
 
     prices = df["last_price"].values
 
-
-    window_size = int(
-        window_seconds / stride_seconds
+    df = (
+        df.sort_values("exchange_ts")
+        .reset_index(drop=True)
     )
 
-    stride = 1
+    times = df["exchange_ts"].values
+    prices = df["last_price"].values
+
+    window_delta = np.timedelta64(
+        window_seconds,
+        "s"
+    )
+
+    step_delta = np.timedelta64(
+        step_seconds,
+        "s"
+    )
 
 
     path_eff_list = []
@@ -106,19 +117,29 @@ def analyze_trend_distribution(
     scope_list = []
     return_list = []
 
+    start_time = times[0]
 
-    n = len(prices)
+    end_time = times[-1]
 
+    current_time = start_time
 
-    for i in range(
-        0,
-        n - window_size,
-        stride
-    ):
+    while current_time + window_delta <= end_time:
 
-        window = prices[
-            i:i+window_size
-        ]
+        end_window_time = (
+                current_time + window_delta
+        )
+
+        mask = (
+                (times >= current_time)
+                &
+                (times <= end_window_time)
+        )
+
+        window = prices[mask]
+
+        if len(window) < 2:
+            current_time += step_delta
+            continue
 
         # 可选的大波动窗口过滤
         return_tick = abs(window[-1] - window[0]) / tick_size
@@ -454,14 +475,14 @@ if __name__ == "__main__":
             .sort_values("exchange_ts")
             .reset_index(drop=True)
         )
-
+        # TODO labeler里的时间逻辑还是按照相邻数据必然是0.5s的，没有统一改成按真实时间戳间隔
         labeler = TrendLabeler(min_return_tick=0.2, path_efficiency_threshold=0.1)
         # df = labeler.label(df)
 
         dist = analyze_trend_distribution(
             df_session,
             window_seconds=10,
-            stride_seconds=0.5,
+            step_seconds=0.5,
             # min_return_tick=30
         )
 
