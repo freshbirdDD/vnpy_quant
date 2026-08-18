@@ -442,12 +442,6 @@ if __name__ == "__main__":
 
     df = pd.read_parquet(DATA_PATH)
 
-
-    df = (
-        df[df["instrument"] == instrument]
-        .sort_values("local_timestamp_us")
-        .reset_index(drop=True)
-    )
     # 去掉开盘前字段
     df = df[df["session"] != 'PREOPEN']
 
@@ -455,6 +449,12 @@ if __name__ == "__main__":
     # for session in ["AM", "PM"]:
     for session in ["AM",]:
         df_session = df[df["session"] == session]
+        df_session = (
+            df_session[df_session["instrument"] == instrument]
+            .sort_values("exchange_ts")
+            .reset_index(drop=True)
+        )
+
         labeler = TrendLabeler(min_return_tick=0.2, path_efficiency_threshold=0.1)
         # df = labeler.label(df)
 
