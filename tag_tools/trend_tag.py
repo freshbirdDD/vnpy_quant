@@ -3,46 +3,168 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import os
 
-def calc_linear_efficiency(prices):
+
+def iter_continuous_segments(df):
     """
-    基于线性回归的趋势效率
+    把一天数据切成互不连续的交易段。
 
-    返回:
-        efficiency: 0~1
-        slope: 趋势方向斜率
+    当前连续边界：
+    - instrument
+    - session: AM / PM
 
-    R²越高，说明价格越符合线性趋势
+    PREOPEN 等其他 session 不参与趋势统计和打标。
+    """
+
+    if "session" not in df.columns:
+        raise ValueError(
+            "df must contain 'session' column"
+        )
+
+    work = df[
+        df["session"].isin(["AM", "PM"])
+    ]
+
+    # TODO 这里直接把df如果有多合约的情况下拆开了，而不是外部先指定一个合约
+    if "instrument" in work.columns:
+        group_cols = [
+            "instrument",
+            "session"
+        ]
+    else:
+        group_cols = [
+            "session"
+        ]
+
+    for _, segment in work.groupby(
+        group_cols,
+        sort=False,
+        observed=True
+    ):
+        segment = (
+            segment
+            .sort_values("exchange_ts")
+        )
+
+        if len(segment) >= 2:
+            yield segment
+
+
+def calc_linear_efficiency(prices, times):
+    """
+    基于真实时间的线性回归趋势指标。
+
+    参数
+    ----------
+    prices:
+        价格序列
+
+    times:
+        与 prices 一一对应的真实时间戳序列，
+        例如 exchange_ts。
+
+    返回
+    ----------
+    r2:
+        线性拟合优度，范围 0~1。
+
+    slope:
+        线性回归斜率，单位为 price / second。
+
+        slope > 0:
+            上涨趋势
+
+        slope < 0:
+            下跌趋势
+
+        abs(slope) 越大:
+            单位时间价格移动越快
     """
 
     if len(prices) < 2:
-        return 0, 0
+        return 0.0, 0.0
 
-    x = np.arange(len(prices))
+    if len(prices) != len(times):
+        raise ValueError(
+            "prices and times must have the same length"
+        )
 
-    y = np.array(prices)
+    y = np.asarray(
+        prices,
+        dtype=float
+    )
 
-    # 一阶线性拟合
-    slope, intercept = np.polyfit(x, y, 1)
+    time_index = pd.DatetimeIndex(
+        pd.to_datetime(times)
+    )
 
-    y_pred = slope * x + intercept
+    # 以窗口第一条数据为 t=0，
+    # 转换成真实经过秒数
+    x = (
+        time_index
+        -
+        time_index[0]
+    ).total_seconds().to_numpy(
+        dtype=float
+    )
 
-    # 总平方和
+    # 防止脏数据
+    valid = (
+        np.isfinite(x)
+        &
+        np.isfinite(y)
+    )
+
+    x = x[valid]
+    y = y[valid]
+
+    if len(y) < 2:
+        return 0.0, 0.0
+
+    # 至少需要两个不同的真实时间点
+    if np.ptp(x) <= 0:
+        return 0.0, 0.0
+
+    # price = slope * time + intercept
+    slope, intercept = np.polyfit(
+        x,
+        y,
+        1
+    )
+
+    y_pred = (
+        slope * x
+        +
+        intercept
+    )
+
     ss_tot = np.sum(
         (y - np.mean(y)) ** 2
     )
 
-    # 残差平方和
     ss_res = np.sum(
         (y - y_pred) ** 2
     )
 
-    if ss_tot == 0:
-        r2 = 0
+    if ss_tot <= 0:
+        r2 = 0.0
 
     else:
-        r2 = 1 - ss_res / ss_tot
+        r2 = (
+            1.0
+            -
+            ss_res / ss_tot
+        )
 
-    return max(r2, 0), slope
+    # 浮点误差可能产生轻微越界
+    r2 = float(
+        np.clip(
+            r2,
+            0.0,
+            1.0
+        )
+    )
+
+    return r2, float(slope)
 
 
 def calc_path_efficiency(prices):
@@ -73,24 +195,16 @@ def analyze_trend_distribution(
     step_seconds=0.5,
     tick_size=0.2,
     bins=50,
-    min_return_tick=0.0
 ):
     """
-    基于真实时间窗口统计tick趋势指标分布
+    对一天数据中的所有连续交易段进行真实时间滑窗统计。
+
+    自动隔离：
+    - instrument
+    - AM / PM
+
+    不做任何趋势阈值过滤。
     """
-
-    df = (
-        df.sort_values("exchange_ts")
-        .reset_index(drop=True)
-    )
-
-    times = df["exchange_ts"]
-    prices = df["last_price"].values
-
-
-    if len(df) < 2:
-        return {}
-
 
     window_delta = pd.Timedelta(
         seconds=window_seconds
@@ -100,56 +214,100 @@ def analyze_trend_distribution(
         seconds=step_seconds
     )
 
-
     path_eff_list = []
     linear_R2_list = []
     slope_list = []
     return_list = []
 
+    for segment in iter_continuous_segments(
+        df
+    ):
 
-    start_time = times.iloc[0]
-    end_time = times.iloc[-1]
+        segment = (
+            segment
+            .sort_values("exchange_ts")
+            .reset_index(drop=True)
+        )
 
-    current_time = start_time
+        times = pd.to_datetime(
+            segment["exchange_ts"]
+        )
 
+        prices = (
+            segment["last_price"]
+            .to_numpy()
+        )
 
-    while current_time + window_delta <= end_time:
+        start_time = times.iloc[0]
+        end_time = times.iloc[-1]
 
-        end_window_time = (
+        current_time = start_time
+
+        while (
             current_time + window_delta
-        )
+            <=
+            end_time
+        ):
 
-        mask = (
-            (times >= current_time)
-            &
-            (times <= end_window_time)
-        )
-
-
-        window = prices[
-            mask.values
-        ]
-
-
-        if len(window) >= 2:
-
-            return_tick = (
-                abs(window[-1] - window[0])
-                /
-                tick_size
+            end_window_time = (
+                current_time
+                +
+                window_delta
             )
 
+            # 基于真实时间寻找窗口边界
+            start_idx = times.searchsorted(
+                current_time,
+                side="left"
+            )
 
-            if return_tick >= min_return_tick:
+            end_idx = times.searchsorted(
+                end_window_time,
+                side="right"
+            )
 
-                path_eff = calc_path_efficiency(
-                    window
+            window_prices = prices[
+                start_idx:end_idx
+            ]
+
+            window_times = times.iloc[
+                start_idx:end_idx
+            ]
+
+            if len(window_prices) >= 2:
+
+                return_tick = (
+                    abs(
+                        window_prices[-1]
+                        -
+                        window_prices[0]
+                    )
+                    /
+                    tick_size
                 )
 
-                linear_R2, slope = calc_linear_efficiency(
-                    window
+                path_eff = (
+                    calc_path_efficiency(
+                        window_prices
+                    )
                 )
 
+                linear_R2, slope = (
+                    calc_linear_efficiency(
+                        window_prices,
+                        window_times
+                    )
+                )
+
+                slope_tick_per_second = (
+                    slope
+                    /
+                    tick_size
+                )
+
+                return_list.append(
+                    return_tick
+                )
 
                 path_eff_list.append(
                     path_eff
@@ -160,78 +318,83 @@ def analyze_trend_distribution(
                 )
 
                 slope_list.append(
-                    slope
+                    slope_tick_per_second
                 )
 
-                return_list.append(
-                    return_tick
-                )
-
-
-        # 无论是否continue，都推进窗口
-        current_time += step_delta
-
-
-
-    path_eff_arr = np.array(
-        path_eff_list
-    )
-
-    linear_R2_arr = np.array(
-        linear_R2_list
-    )
-
-    slope_arr = np.array(
-        slope_list
-    )
-
-    return_arr = np.array(
-        return_list
-    )
+            current_time += step_delta
 
 
     result = {
-        "path_efficiency": path_eff_arr,
-        "linear_R2": linear_R2_arr,
-        "slope": slope_arr,
-        "return_tick": return_arr
+        "path_efficiency": np.asarray(
+            path_eff_list
+        ),
+        "linear_R2": np.asarray(
+            linear_R2_list
+        ),
+        "slope": np.asarray(
+            slope_list
+        ),
+        "return_tick": np.asarray(
+            return_list
+        ),
     }
+
+
+    # 没有合法窗口时直接返回，
+    # 避免 np.min / percentile 报错
+    if len(return_list) == 0:
+        return result
 
 
     print("path_efficiency:")
     print(
-        np.min(path_eff_arr),
-        np.max(path_eff_arr)
+        np.min(
+            result["path_efficiency"]
+        ),
+        np.max(
+            result["path_efficiency"]
+        )
     )
 
     print("\nlinear_R2:")
     print(
-        np.min(linear_R2_arr),
-        np.max(linear_R2_arr)
+        np.min(
+            result["linear_R2"]
+        ),
+        np.max(
+            result["linear_R2"]
+        )
     )
 
     print("\nslope:")
     print(
-        np.min(slope_arr),
-        np.max(slope_arr)
+        np.min(
+            result["slope"]
+        ),
+        np.max(
+            result["slope"]
+        )
     )
 
     print("\nreturn_tick:")
     print(
-        np.min(return_arr),
-        np.max(return_arr)
+        np.min(
+            result["return_tick"]
+        ),
+        np.max(
+            result["return_tick"]
+        )
     )
 
 
     fig, axes = plt.subplots(
         1,
         3,
-        figsize=(18,5)
+        figsize=(18, 5)
     )
 
-
     axes[0].hist(
-        path_eff_arr,
+        result["path_efficiency"],
         bins=bins
     )
 
@@ -239,9 +402,8 @@ def analyze_trend_distribution(
         "Path Efficiency"
     )
 
-
     axes[1].hist(
-        linear_R2_arr,
+        result["linear_R2"],
         bins=bins
     )
 
@@ -249,9 +411,8 @@ def analyze_trend_distribution(
         "Linear R2"
     )
 
-
     axes[2].hist(
-        return_arr,
+        result["return_tick"],
         bins=bins
     )
 
@@ -259,18 +420,18 @@ def analyze_trend_distribution(
         "Return Tick"
     )
 
-
     plt.tight_layout()
     plt.show()
 
-
     return result
-
 
 
 class TrendLabeler:
     """
     基于价格序列的单边趋势事件筛选器
+
+    时间窗口基于 exchange_ts 滑动，
+    不假设相邻两条数据固定相差 0.5s。
 
     输出:
     O
@@ -286,159 +447,568 @@ class TrendLabeler:
         min_return_tick=10.0,
         tick_size=0.2,
         path_efficiency_threshold=0.6,
-        linear_efficiency_threshold=0.7,
+        linear_r2_threshold=0.7,
+        min_abs_slope_tick_per_second=0.0,
         max_drawdown_ratio=0.4,
         extend_step_seconds=0.5,
         max_extend_seconds=120.0,
     ):
-        # 扫描窗口初始时间宽度
+        # 初始扫描窗口的真实时间宽度
         self.window_seconds = window_seconds
-        # 两行数据代表的间隔
+
+        # 窗口起点每次在时间轴上向右移动多少秒
         self.stride_seconds = stride_seconds
 
         self.tick_size = tick_size
 
-        # 最小的
+        # 初始窗口最小价格位移，单位 tick
         self.min_return_tick = min_return_tick
-        # 单边路径效率阈值，0 < efficiency_threshold <= 1
+
+        # 单边路径效率阈值
         self.efficiency_threshold = path_efficiency_threshold
-        # 单边线性回归斜率阈值
-        self.linear_efficiency_threshold = linear_efficiency_threshold
-        # 最大回撤比率
+
+        # 暂时保留，当前 check_window 里还没有使用
+        self.linear_r2_threshold = (
+            linear_r2_threshold
+        )
+
+        self.min_abs_slope_tick_per_second = (
+            min_abs_slope_tick_per_second
+        )
+
+        # 最大回撤 / 当前趋势位移
         self.max_drawdown_ratio = max_drawdown_ratio
 
-        # 扩展边界步长
+        # 找到 seed 后，每次向右扩展多少真实时间
         self.extend_step_seconds = extend_step_seconds
-        # 最大扩展距离
+
+        # seed 窗口之后最多继续扩展多少真实时间
         self.max_extend_seconds = max_extend_seconds
+
 
     def calc_return_tick(self, prices):
         """
-        窗口价差
+        窗口首尾价格位移，单位 tick
         """
-        return abs(prices[-1] - prices[0]) / self.tick_size
+        return (
+            abs(prices[-1] - prices[0])
+            /
+            self.tick_size
+        )
 
-    def check_window(self, prices):
+    def check_window(
+            self,
+            prices,
+            times
+    ):
         """
         判断窗口是否满足趋势候选
         """
 
-        ret = self.calc_return_tick(prices)
-
-        efficiency = calc_path_efficiency(prices)
-
-        if ret < self.min_return_tick:
+        if len(prices) < 2:
             return False
 
-        if efficiency < self.efficiency_threshold:
+        ret = self.calc_return_tick(
+            prices
+        )
+
+        path_efficiency = (
+            calc_path_efficiency(
+                prices
+            )
+        )
+
+        linear_r2, slope = (
+            calc_linear_efficiency(
+                prices,
+                times
+            )
+        )
+
+        slope_tick_per_second = (
+                slope
+                /
+                self.tick_size
+        )
+
+        if (
+                ret
+                <
+                self.min_return_tick
+        ):
+            return False
+
+        if (
+                path_efficiency
+                <
+                self.efficiency_threshold
+        ):
+            return False
+
+        if (
+                linear_r2
+                <
+                self.linear_r2_threshold
+        ):
+            return False
+
+        if (
+                abs(
+                    slope_tick_per_second
+                )
+                <
+                self.min_abs_slope_tick_per_second
+        ):
             return False
 
         return True
 
-    def check_extension(self, prices):
+    def check_extension(
+            self,
+            prices,
+            recent_prices,
+            recent_times
+    ):
         """
-        判断趋势是否还能继续延伸
+        判断趋势是否允许继续扩展。
+
+        recent_prices / recent_times：
+            当前末端最近一个 window_seconds 的窗口。
+
+        扩展要求：
+        1. 最近窗口仍然满足完整趋势条件
+           - return
+           - path efficiency
+           - R2
+           - slope
+        2. 整个累计趋势段没有发生过大回撤
         """
 
-        # ret = self.calc_return_tick(prices)
-
-        efficiency = calc_path_efficiency(prices)
-        if efficiency < self.efficiency_threshold:
+        if len(prices) < 2:
             return False
-        # 最大回撤判断
+
+        # ---------------------------------
+        # 最近一个时间窗必须仍然是趋势
+        # ---------------------------------
+
+        if not self.check_window(
+                recent_prices,
+                recent_times
+        ):
+            return False
+
+        # ---------------------------------
+        # 整段最大回撤限制
+        # ---------------------------------
+
         start = prices[0]
 
-        direction = np.sign(prices[-1] - start)
+        direction = np.sign(
+            prices[-1] - start
+        )
+
         if direction > 0:
 
-            peak = np.maximum.accumulate(prices)
+            peak = np.maximum.accumulate(
+                prices
+            )
 
-            drawdown = peak - prices
+            drawdown = (
+                    peak - prices
+            )
+
+        elif direction < 0:
+
+            trough = np.minimum.accumulate(
+                prices
+            )
+
+            drawdown = (
+                    prices - trough
+            )
 
         else:
+            return False
 
-            trough = np.minimum.accumulate(prices)
+        max_dd = np.max(
+            drawdown
+        )
 
-            drawdown = prices - trough
-        max_dd = np.max(drawdown)
+        trend_move = abs(
+            prices[-1] - start
+        )
 
-        trend_move = abs(prices[-1] - start)
         if trend_move == 0:
             return False
-        if max_dd > trend_move * self.max_drawdown_ratio:
+
+        if (
+                max_dd
+                >
+                trend_move
+                *
+                self.max_drawdown_ratio
+        ):
             return False
+
         return True
 
-    def label(self, df):
 
-        df = df.copy()
+    def _label_segment(self, df):
+
+        # 和 analyze_trend_distribution 保持一致：
+        # 先按真实交易所时间排序
+        df = (
+            df.sort_values(
+                "exchange_ts"
+            )
+            .reset_index(drop=True)
+            .copy()
+        )
 
         df["trend_tag"] = "O"
-        # times = df["datetime"].values
-        prices = df["last_price"].values
-        n = len(df)
-        window_size = int(
-            self.window_seconds /
-            self.stride_seconds
+
+
+        if len(df) < 2:
+            return df
+
+
+        times = pd.to_datetime(
+            df["exchange_ts"]
         )
-        step = 1
-        i = 0 #窗口起点
-        while i < n - window_size:
-            seed_prices = prices[
-                i:i+window_size
-            ]
-            # 没有趋势候选，窗口起点右移
-            if not self.check_window(seed_prices):
 
-                i += step
-                continue
-            # 找到了B
-            start_idx = i
-            end_idx = i + window_size - 1
-            # 向右扩展
-            extend_limit = int(
-                self.max_extend_seconds /
-                self.stride_seconds
+        prices = (
+            df["last_price"]
+            .to_numpy()
+        )
+
+        n = len(df)
+
+
+        # 所有窗口长度都转换成真实 timedelta，
+        # 不再转换成“多少行”
+        window_delta = pd.Timedelta(
+            seconds=self.window_seconds
+        )
+
+        stride_delta = pd.Timedelta(
+            seconds=self.stride_seconds
+        )
+
+        extend_step_delta = pd.Timedelta(
+            seconds=self.extend_step_seconds
+        )
+
+        max_extend_delta = pd.Timedelta(
+            seconds=self.max_extend_seconds
+        )
+
+
+        start_time = times.iloc[0]
+
+        last_time = times.iloc[-1]
+
+        current_time = start_time
+
+
+        while (
+            current_time + window_delta
+            <=
+            last_time
+        ):
+
+            # =====================================
+            # 1. 构造真实时间 seed window
+            # =====================================
+
+            seed_end_time = (
+                current_time
+                +
+                window_delta
             )
-            j = end_idx
-            while j < min(
-                n - 1,
-                end_idx + extend_limit
+
+
+            # 对应:
+            #
+            # current_time
+            # <= exchange_ts
+            # <= seed_end_time
+            #
+            # 和 analyze_trend_distribution 的 mask
+            # 语义一致。
+
+            start_idx = times.searchsorted(
+                current_time,
+                side="left"
+            )
+
+            seed_end_exclusive = (
+                times.searchsorted(
+                    seed_end_time,
+                    side="right"
+                )
+            )
+
+
+            # 时间窗里不足两个真实 tick
+            if (
+                seed_end_exclusive
+                -
+                start_idx
+                <
+                2
             ):
-                test_prices = prices[
-                    start_idx:j+1
-                ]
-                if not self.check_extension(test_prices):
 
-                    break
-                j += 1
-            end_idx = j - 1
-            # 太短的不算
-            if end_idx <= start_idx:
+                current_time += (
+                    stride_delta
+                )
 
-                i += step
                 continue
-            # 写标签
+
+            seed_prices = prices[
+                start_idx:
+                seed_end_exclusive
+            ]
+
+            seed_times = times.iloc[
+                start_idx:
+                seed_end_exclusive
+            ]
+
+
+            # =====================================
+            # 2. 判断 seed 是否为趋势候选
+            # =====================================
+
+            if not self.check_window(
+                    seed_prices,
+                    seed_times
+            ):
+
+                # 注意：
+                # 这里只推进真实时间，
+                # 不再默认“下一行 = 0.5 秒”
+                current_time += (
+                    stride_delta
+                )
+
+                continue
+
+
+            # 找到了趋势 seed
+            #
+            # seed_end_exclusive 是右开区间，
+            # 所以真实最后一条数据是 -1
+            end_idx = (
+                seed_end_exclusive - 1
+            )
+
+
+            # =====================================
+            # 3. 基于真实时间向右扩展
+            # =====================================
+
+            max_end_time = (
+                seed_end_time
+                +
+                max_extend_delta
+            )
+
+            candidate_end_time = (
+                seed_end_time
+                +
+                extend_step_delta
+            )
+
+
+            while (
+                candidate_end_time
+                <=
+                max_end_time
+                and
+                end_idx < n - 1
+            ):
+
+                # 找到 candidate_end_time 之前
+                # 所有实际存在的 tick
+                candidate_end_exclusive = (
+                    times.searchsorted(
+                        candidate_end_time,
+                        side="right"
+                    )
+                )
+
+                candidate_end_idx = (
+                    candidate_end_exclusive
+                    -
+                    1
+                )
+
+
+                # 这一时间步内没有新的 tick
+                #
+                # 例如：
+                # 上一条数据 09:30:10.2
+                # 下一条数据 09:30:11.2
+                #
+                # 即使 extend_step_seconds=0.5，
+                # 09:30:10.7 时也不会凭空认为
+                # 存在一条数据。
+                if (
+                    candidate_end_idx
+                    <=
+                    end_idx
+                ):
+
+                    candidate_end_time += (
+                        extend_step_delta
+                    )
+
+                    continue
+
+                test_prices = prices[
+                    start_idx:
+                    candidate_end_exclusive
+                ]
+
+                # 当前末端最近一个 window_seconds
+                recent_start_time = (
+                        candidate_end_time
+                        -
+                        window_delta
+                )
+
+                recent_start_idx = (
+                    times.searchsorted(
+                        recent_start_time,
+                        side="left"
+                    )
+                )
+
+                recent_prices = prices[
+                    recent_start_idx:
+                    candidate_end_exclusive
+                ]
+
+                recent_times = times.iloc[
+                    recent_start_idx:
+                    candidate_end_exclusive
+                ]
+
+                if not self.check_extension(
+                        test_prices,
+                        recent_prices,
+                        recent_times
+                ):
+                    break
+
+
+                # 扩展成功
+                end_idx = (
+                    candidate_end_idx
+                )
+
+
+                candidate_end_time += (
+                    extend_step_delta
+                )
+
+
+            # =====================================
+            # 4. 写 BIO 风格标签
+            # =====================================
 
             df.loc[
                 start_idx,
                 "trend_tag"
             ] = "B_TREND"
-            if end_idx > start_idx + 1:
+
+
+            if (
+                end_idx
+                >
+                start_idx + 1
+            ):
 
                 df.loc[
-                    start_idx+1:end_idx-1,
+                    start_idx + 1:
+                    end_idx - 1,
                     "trend_tag"
                 ] = "I_TREND"
+
+
             df.loc[
                 end_idx,
                 "trend_tag"
             ] = "E_TREND"
-            # 跳过整个事件
 
-            i = end_idx + 1
+
+            # =====================================
+            # 5. 跳过已经识别出来的整个事件
+            # =====================================
+
+            if end_idx >= n - 1:
+                break
+
+
+            # 这里同样基于真实时间推进，
+            # 而不是 end_idx + 1 等价于 0.5 秒
+            current_time = (
+                times.iloc[end_idx]
+                +
+                stride_delta
+            )
+
+
         return df
 
+    def label(self, df):
+        """
+        对一天数据进行趋势打标。
+
+        自动隔离：
+        - instrument
+        - AM / PM
+
+        不允许趋势跨 session。
+        """
+
+        result = (
+            df
+            .reset_index(drop=True)
+            .copy()
+        )
+
+        result["trend_tag"] = "O"
+
+        for segment in iter_continuous_segments(
+            result
+        ):
+
+            # segment 当前 index 对应 result 的真实行号
+            source_indices = (
+                segment.index.to_numpy()
+            )
+
+            segment_input = (
+                segment
+                .reset_index(drop=True)
+            )
+
+            labeled = (
+                self._label_segment(
+                    segment_input
+                )
+            )
+
+            result.loc[
+                source_indices,
+                "trend_tag"
+            ] = (
+                labeled["trend_tag"]
+                .to_numpy()
+            )
+
+        return result
 
 if __name__ == "__main__":
     year = 2024
@@ -451,35 +1021,22 @@ if __name__ == "__main__":
 
     # 去掉开盘前字段
     df = df[df["session"] != 'PREOPEN']
+    # 统计所有时间滑窗的单边上涨指标
+    dist = analyze_trend_distribution(
+        df,
+        window_seconds=10,
+        step_seconds=0.5,
+    )
 
-    # 区分上午下午
-    # for session in ["AM", "PM"]:
-    for session in ["AM",]:
-        df_session = df[df["session"] == session]
-        df_session = (
-            df_session[df_session["instrument"] == instrument]
-            .sort_values("exchange_ts")
-            .reset_index(drop=True)
-        )
-        # TODO labeler里的时间逻辑还是按照相邻数据必然是0.5s的，没有统一改成按真实时间戳间隔
-        labeler = TrendLabeler(min_return_tick=0.2, path_efficiency_threshold=0.1)
-        # df = labeler.label(df)
+    labeler = TrendLabeler(
+        window_seconds=10,
+        min_return_tick=10,
+        path_efficiency_threshold=0.6,
+        linear_r2_threshold=0.7,
+        min_abs_slope_tick_per_second=1.0,
+    )
 
-        dist = analyze_trend_distribution(
-            df_session,
-            window_seconds=10,
-            step_seconds=0.5,
-            min_return_tick=5
-            # min_return_tick=30
-        )
-
-        for k, v in dist.items():
-            print(
-                k,
-                np.percentile(
-                    v,
-                    [50, 90, 95, 99]
-                )
-            )
-
+    labeled_df = labeler.label(
+        df
+    )
 
