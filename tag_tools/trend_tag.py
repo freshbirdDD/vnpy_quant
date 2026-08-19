@@ -103,7 +103,7 @@ def analyze_trend_distribution(
 
     path_eff_list = []
     linear_R2_list = []
-    scope_list = []
+    slope_list = []
     return_list = []
 
 
@@ -146,7 +146,7 @@ def analyze_trend_distribution(
                     window
                 )
 
-                linear_R2, scope = calc_linear_efficiency(
+                linear_R2, slope = calc_linear_efficiency(
                     window
                 )
 
@@ -159,8 +159,8 @@ def analyze_trend_distribution(
                     linear_R2
                 )
 
-                scope_list.append(
-                    scope
+                slope_list.append(
+                    slope
                 )
 
                 return_list.append(
@@ -181,8 +181,8 @@ def analyze_trend_distribution(
         linear_R2_list
     )
 
-    scope_arr = np.array(
-        scope_list
+    slope_arr = np.array(
+        slope_list
     )
 
     return_arr = np.array(
@@ -193,7 +193,7 @@ def analyze_trend_distribution(
     result = {
         "path_efficiency": path_eff_arr,
         "linear_R2": linear_R2_arr,
-        "scope": scope_arr,
+        "slope": slope_arr,
         "return_tick": return_arr
     }
 
@@ -210,10 +210,10 @@ def analyze_trend_distribution(
         np.max(linear_R2_arr)
     )
 
-    print("\nscope:")
+    print("\nslope:")
     print(
-        np.min(scope_arr),
-        np.max(scope_arr)
+        np.min(slope_arr),
+        np.max(slope_arr)
     )
 
     print("\nreturn_tick:")
@@ -442,7 +442,8 @@ class TrendLabeler:
 
 if __name__ == "__main__":
     year = 2024
-    trading_day = "0104"
+    # trading_day = "0104"
+    trading_day = "0123"
     DATA_PATH = f"/Users/jinhongdou/股指/product=IF/year={year}/trading_day={year}{trading_day}/data.parquet"
     instrument = "IF2403"
 
@@ -468,6 +469,7 @@ if __name__ == "__main__":
             df_session,
             window_seconds=10,
             step_seconds=0.5,
+            min_return_tick=5
             # min_return_tick=30
         )
 
