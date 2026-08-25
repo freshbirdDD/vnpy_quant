@@ -1,8 +1,11 @@
+"""
+单边分析的分析工具代码库，同时也在这里进行分析代码在单天数据上的校验和可视化
+"""
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
-
+from tqdm import tqdm
 
 def iter_continuous_segments(df):
     """
@@ -189,21 +192,32 @@ def calc_path_efficiency(prices):
 
 
 
-def analyze_trend_distribution(
+def collect_trend_window_features(
     df,
     window_seconds=10,
     step_seconds=0.5,
     tick_size=0.2,
-    bins=50,
 ):
     """
-    对一天数据中的所有连续交易段进行真实时间滑窗统计。
+    收集一天数据所有合法滑窗的趋势特征。
 
     自动隔离：
     - instrument
     - AM / PM
 
-    不做任何趋势阈值过滤。
+    返回：
+        DataFrame，每一行对应一个时间滑窗。
+
+    字段：
+        instrument
+        session
+        window_start
+        window_end
+        return_tick
+        path_efficiency
+        linear_r2
+        slope_tick_per_second
+        abs_slope_tick_per_second
     """
 
     window_delta = pd.Timedelta(
@@ -214,10 +228,7 @@ def analyze_trend_distribution(
         seconds=step_seconds
     )
 
-    path_eff_list = []
-    linear_R2_list = []
-    slope_list = []
-    return_list = []
+    rows = []
 
     for segment in iter_continuous_segments(
         df
@@ -238,31 +249,38 @@ def analyze_trend_distribution(
             .to_numpy()
         )
 
-        start_time = times.iloc[0]
-        end_time = times.iloc[-1]
+        instrument = (
+            segment["instrument"].iloc[0]
+            if "instrument" in segment.columns
+            else None
+        )
 
-        current_time = start_time
+        session = (
+            segment["session"].iloc[0]
+        )
+
+        current_time = times.iloc[0]
+        segment_end_time = times.iloc[-1]
 
         while (
             current_time + window_delta
             <=
-            end_time
+            segment_end_time
         ):
 
-            end_window_time = (
+            window_end_time = (
                 current_time
                 +
                 window_delta
             )
 
-            # 基于真实时间寻找窗口边界
             start_idx = times.searchsorted(
                 current_time,
                 side="left"
             )
 
             end_idx = times.searchsorted(
-                end_window_time,
+                window_end_time,
                 side="right"
             )
 
@@ -286,13 +304,13 @@ def analyze_trend_distribution(
                     tick_size
                 )
 
-                path_eff = (
+                path_efficiency = (
                     calc_path_efficiency(
                         window_prices
                     )
                 )
 
-                linear_R2, slope = (
+                linear_r2, slope = (
                     calc_linear_efficiency(
                         window_prices,
                         window_times
@@ -305,126 +323,255 @@ def analyze_trend_distribution(
                     tick_size
                 )
 
-                return_list.append(
-                    return_tick
-                )
-
-                path_eff_list.append(
-                    path_eff
-                )
-
-                linear_R2_list.append(
-                    linear_R2
-                )
-
-                slope_list.append(
-                    slope_tick_per_second
-                )
+                rows.append({
+                    "instrument": instrument,
+                    "session": session,
+                    "window_start": current_time,
+                    "window_end": window_end_time,
+                    "return_tick": return_tick,
+                    "path_efficiency": path_efficiency,
+                    "linear_r2": linear_r2,
+                    "slope_tick_per_second": (
+                        slope_tick_per_second
+                    ),
+                    "abs_slope_tick_per_second": (
+                        abs(
+                            slope_tick_per_second
+                        )
+                    ),
+                })
 
             current_time += step_delta
 
+    return pd.DataFrame(rows)
 
-    result = {
-        "path_efficiency": np.asarray(
-            path_eff_list
-        ),
-        "linear_R2": np.asarray(
-            linear_R2_list
-        ),
-        "slope": np.asarray(
-            slope_list
-        ),
-        "return_tick": np.asarray(
-            return_list
-        ),
-    }
+def plot_trend_distribution(
+    df,
+    window_seconds=10,
+    step_seconds=0.5,
+    tick_size=0.2,
+    bins=50,
+    plot_now = True
+):
+    """
+    用于随机抽取一天或几天数据，
+    肉眼观察各趋势特征的整体分布。
+    """
 
-
-    # 没有合法窗口时直接返回，
-    # 避免 np.min / percentile 报错
-    if len(return_list) == 0:
-        return result
-
-
-    print("path_efficiency:")
-    print(
-        np.min(
-            result["path_efficiency"]
-        ),
-        np.max(
-            result["path_efficiency"]
-        )
+    features = collect_trend_window_features(
+        df,
+        window_seconds=window_seconds,
+        step_seconds=step_seconds,
+        tick_size=tick_size,
     )
 
-    print("\nlinear_R2:")
-    print(
-        np.min(
-            result["linear_R2"]
-        ),
-        np.max(
-            result["linear_R2"]
-        )
-    )
+    if features.empty:
+        print("No valid windows.")
+        return features
 
-    print("\nslope:")
-    print(
-        np.min(
-            result["slope"]
-        ),
-        np.max(
-            result["slope"]
-        )
-    )
+    if not plot_now:
+        return features
 
-    print("\nreturn_tick:")
-    print(
-        np.min(
-            result["return_tick"]
-        ),
-        np.max(
-            result["return_tick"]
-        )
-    )
+    columns = [
+        "return_tick",
+        "path_efficiency",
+        "linear_r2",
+        "abs_slope_tick_per_second",
+    ]
 
+    titles = [
+        "Return Tick",
+        "Path Efficiency",
+        "Linear R2",
+        "Abs Slope (tick/s)",
+    ]
 
     fig, axes = plt.subplots(
-        1,
-        3,
-        figsize=(18, 5)
+        2,
+        2,
+        figsize=(14, 10)
     )
 
-    axes[0].hist(
-        result["path_efficiency"],
-        bins=bins
-    )
+    axes = axes.flatten()
 
-    axes[0].set_title(
-        "Path Efficiency"
-    )
+    for ax, column, title in zip(
+        axes,
+        columns,
+        titles
+    ):
+        ax.hist(
+            features[column],
+            bins=bins
+        )
 
-    axes[1].hist(
-        result["linear_R2"],
-        bins=bins
-    )
-
-    axes[1].set_title(
-        "Linear R2"
-    )
-
-    axes[2].hist(
-        result["return_tick"],
-        bins=bins
-    )
-
-    axes[2].set_title(
-        "Return Tick"
-    )
+        ax.set_title(title)
 
     plt.tight_layout()
     plt.show()
 
-    return result
+    return features
 
+def summarize_trend_distribution(
+    df,
+    window_seconds=10,
+    step_seconds=0.5,
+    tick_size=0.2,
+    quantiles=(0.50, 0.75, 0.90, 0.95, 0.99),
+):
+    """
+    对单个 contract-day 的所有时间滑窗做趋势特征统计。
+
+    使用场景：
+        后续遍历大量 日期 × 合约，
+        每个 contract-day 返回一行统计结果。
+
+    输入要求：
+        df 必须只包含：
+        - 一个 trading_day
+        - 一个 instrument
+
+    返回：
+        dict，可直接用于构造 DataFrame。
+    """
+
+    if df.empty:
+        return {
+            "trading_day": None,
+            "instrument": None,
+            "daily_volume": 0,
+            "window_count": 0,
+        }
+
+    # =====================================
+    # 1. 确认输入是单日、单合约
+    # =====================================
+
+    instruments = (
+        df["instrument"]
+        .dropna()
+        .unique()
+    )
+
+    if len(instruments) != 1:
+        raise ValueError(
+            "summarize_trend_distribution "
+            "expects exactly one instrument, "
+            f"got {len(instruments)}: {instruments}"
+        )
+
+    instrument = instruments[0]
+
+
+    if "trading_day" in df.columns:
+
+        trading_days = (
+            df["trading_day"]
+            .dropna()
+            .unique()
+        )
+
+        if len(trading_days) != 1:
+            raise ValueError(
+                "summarize_trend_distribution "
+                "expects exactly one trading_day, "
+                f"got {len(trading_days)}: {trading_days}"
+            )
+
+        trading_day = trading_days[0]
+
+    else:
+
+        trading_day = (
+            pd.to_datetime(
+                df["exchange_ts"].iloc[0]
+            )
+            .date()
+        )
+
+
+    # =====================================
+    # 2. 当天总成交量
+    # =====================================
+    #
+    # volume 是日内累计成交量，
+    # 因此取当天最大值即可。
+    #
+    # 注意：
+    # 绝对不能 sum(volume)。
+
+    daily_volume = (
+        pd.to_numeric(
+            df["volume"],
+            errors="coerce"
+        )
+        .max()
+    )
+
+    if pd.isna(daily_volume):
+        daily_volume = 0
+
+
+    # =====================================
+    # 3. 计算当天所有滑窗特征
+    # =====================================
+
+    features = collect_trend_window_features(
+        df,
+        window_seconds=window_seconds,
+        step_seconds=step_seconds,
+        tick_size=tick_size,
+    )
+
+
+    result = {
+        "trading_day": trading_day,
+        "instrument": instrument,
+        "daily_volume": daily_volume,
+        "window_count": len(features),
+    }
+
+
+    if features.empty:
+        return result
+
+
+    # =====================================
+    # 4. 每个指标的关键分位数
+    # =====================================
+
+    columns = [
+        "return_tick",
+        "path_efficiency",
+        "linear_r2",
+        "abs_slope_tick_per_second",
+    ]
+
+
+    for column in columns:
+
+        values = features[column]
+
+        result[
+            f"{column}_min"
+        ] = values.min()
+
+        result[
+            f"{column}_max"
+        ] = values.max()
+
+
+        for q in quantiles:
+
+            percentile = int(
+                round(q * 100)
+            )
+
+            result[
+                f"{column}_p{percentile}"
+            ] = values.quantile(q)
+
+
+    return result
 
 class TrendLabeler:
     """
@@ -1012,31 +1159,45 @@ class TrendLabeler:
 
 if __name__ == "__main__":
     year = 2024
-    # trading_day = "0104"
-    trading_day = "0123"
+    trading_day = "0104"
+    # trading_day = "0123"
     DATA_PATH = f"/Users/jinhongdou/股指/product=IF/year={year}/trading_day={year}{trading_day}/data.parquet"
     instrument = "IF2403"
+    SAVE_PATH = "./labeled_demo.csv"
 
     df = pd.read_parquet(DATA_PATH)
 
     # 去掉开盘前字段
     df = df[df["session"] != 'PREOPEN']
-    # 统计所有时间滑窗的单边上涨指标
-    dist = analyze_trend_distribution(
-        df,
-        window_seconds=10,
-        step_seconds=0.5,
-    )
+    df = df[df['instrument'] == instrument]
 
+    # 计算参数相关性
+    # features = plot_trend_distribution(df)
+
+    # feature_list = ['return_tick', 'path_efficiency', 'linear_r2', 'abs_slope_tick_per_second']
+    #
+    # for i in range(len(feature_list)):
+    #     for j in range(i+1, len(feature_list)):
+    #         print(f"{feature_list[i]}, {feature_list[j]}: {features[feature_list[i]].corr(features[feature_list[j]])}")
+    #
+    # print("ok")
+
+
+    # 单天数据打标
     labeler = TrendLabeler(
         window_seconds=10,
         min_return_tick=10,
-        path_efficiency_threshold=0.6,
-        linear_r2_threshold=0.7,
-        min_abs_slope_tick_per_second=1.0,
+        path_efficiency_threshold=0.65,
+        linear_r2_threshold=0.65,
+        min_abs_slope_tick_per_second=0.0,
     )
 
     labeled_df = labeler.label(
         df
     )
+
+    labeled_df = labeled_df[['instrument', 'exchange_ts', 'bid_price_1', 'ask_price_1', 'last_price', 'volume', 'session', 'trend_tag']]
+
+    labeled_df.to_csv(SAVE_PATH, index=False)
+
 
