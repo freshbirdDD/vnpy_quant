@@ -588,59 +588,296 @@ class TrendLabeler:
     """
 
     def __init__(
-        self,
-        window_seconds=10.0,
-        stride_seconds=0.5,
-        min_return_tick=10.0,
-        tick_size=0.2,
-        path_efficiency_threshold=0.6,
-        linear_r2_threshold=0.7,
-        min_abs_slope_tick_per_second=0.0,
-        max_drawdown_ratio=0.4,
-        extend_step_seconds=0.5,
-        max_extend_seconds=120.0,
+            self,
+            window_seconds=10.0,
+            stride_seconds=0.5,
+            min_return_tick=10.0,
+            tick_size=0.2,
+            path_efficiency_threshold=0.55,
+            linear_r2_threshold=0.65,
+            min_abs_slope_tick_per_second=0.0,
+
+            # Candidate 尾部相对最近 local best
+            # 最多容忍多少 tick 回撤；
+            # 超过后走 LEFT SHRINK，不再 RIGHT EXTENSION
+            max_tail_drawdown_tick=2.0,
+
+            #  LEFT SHRINK
+            max_rewind_seconds=2.0,
+
+            # RIGHT EXTENSION exit boundary 参数
+            max_drawdown_tick=4.0,  # TODO: 后续根据样本调参
+            max_drawdown_ratio=0.4,  # TODO: 后续根据样本调参
+            max_stall_seconds=2.0,
+
+            # 暂时保留兼容，但新 extension 不再依赖固定步长
+            extend_step_seconds=0.5,
+
+            # 右侧搜索的绝对兜底上限
+            max_extend_seconds=120.0,
     ):
-        # 初始扫描窗口的真实时间宽度
         self.window_seconds = window_seconds
-
-        # 窗口起点每次在时间轴上向右移动多少秒
         self.stride_seconds = stride_seconds
-
         self.tick_size = tick_size
 
-        # 初始窗口最小价格位移，单位 tick
         self.min_return_tick = min_return_tick
-
-        # 单边路径效率阈值
-        self.efficiency_threshold = path_efficiency_threshold
-
-        # 暂时保留，当前 check_window 里还没有使用
+        self.efficiency_threshold = (
+            path_efficiency_threshold
+        )
         self.linear_r2_threshold = (
             linear_r2_threshold
         )
-
         self.min_abs_slope_tick_per_second = (
             min_abs_slope_tick_per_second
         )
 
-        # 最大回撤 / 当前趋势位移
-        self.max_drawdown_ratio = max_drawdown_ratio
+        # =====================================
+        # Exit boundary 参数
+        # =====================================
+        self.max_tail_drawdown_tick = (
+            max_tail_drawdown_tick
+        )
 
-        # 找到 seed 后，每次向右扩展多少真实时间
-        self.extend_step_seconds = extend_step_seconds
+        # 从当前最佳退出价最多允许回撤多少 tick
+        self.max_drawdown_tick = (
+            max_drawdown_tick
+        )
 
-        # seed 窗口之后最多继续扩展多少真实时间
-        self.max_extend_seconds = max_extend_seconds
+        # 从当前已获得的 favorable move
+        # 最多允许回吐多少比例
+        self.max_drawdown_ratio = (
+            max_drawdown_ratio
+        )
+
+        # Candidate 原始右端最多向左回收多少秒
+        self.max_rewind_seconds = (
+            max_rewind_seconds
+        )
+
+        # 多久没有出现更好的退出价，
+        # 就认为本轮 exit opportunity 结束
+        self.max_stall_seconds = (
+            max_stall_seconds
+        )
+
+        # 兼容旧接口暂时保留。
+        # 新 exit 搜索按真实 tick 逐条检查，
+        # 不再依赖固定时间步长。
+        self.extend_step_seconds = (
+            extend_step_seconds
+        )
+
+        # Candidate 右端之后最多再观察多久
+        self.max_extend_seconds = (
+            max_extend_seconds
+        )
 
 
     def calc_return_tick(self, prices):
         """
         窗口首尾价格位移，单位 tick
         """
+        return round(abs(prices[-1] - prices[0]) / self.tick_size, 8)
+
+    def _find_best_exit_idx(
+            self,
+            prices,
+            times,
+            start_idx,
+            seed_end_idx,
+            direction,
+    ):
+        start_price = prices[start_idx]
+        seed_end_price = prices[seed_end_idx]
+
+        # =====================================
+        # 1. Candidate 尾部 local best
+        # =====================================
+
+        rewind_idx = (
+            self._find_rewind_exit_idx(
+                prices=prices,
+                times=times,
+                start_idx=start_idx,
+                seed_end_idx=seed_end_idx,
+                direction=direction,
+            )
+        )
+
+        rewind_price = (
+            prices[rewind_idx]
+        )
+
+        # =====================================
+        # 2. Candidate 尾部回撤
+        # =====================================
+        tail_drawdown_tick = round(direction * (rewind_price - seed_end_price) / self.tick_size, 8)
+
+        tail_drawdown_tick = max(0.0, tail_drawdown_tick)
+
+        # =====================================
+        # 3A. 明显尾部衰退
+        #
+        # LEFT SHRINK 后直接结束
+        # =====================================
+
+        if (
+                tail_drawdown_tick
+                >
+                self.max_tail_drawdown_tick
+        ):
+            return rewind_idx
+
+        # =====================================
+        # 3B. 尾部仍然健康
+        #
+        # 当前历史最佳退出点仍然是 local best，
+        # 但继续从 R0 后开始扫描。
+        # =====================================
+
+        best_idx = rewind_idx
+        best_price = rewind_price
+        best_time = times.iloc[
+            rewind_idx
+        ]
+
+        max_scan_time = (
+                times.iloc[seed_end_idx]
+                +
+                pd.Timedelta(
+                    seconds=self.max_extend_seconds
+                )
+        )
+
+        scan_idx = (
+                seed_end_idx + 1
+        )
+
+        n = len(prices)
+
+        while (
+                scan_idx < n
+                and
+                times.iloc[scan_idx]
+                <= max_scan_time
+        ):
+
+            current_price = prices[
+                scan_idx
+            ]
+
+            current_time = times.iloc[
+                scan_idx
+            ]
+
+            if not self.check_extension(
+                    start_price=start_price,
+                    best_price=best_price,
+                    current_price=current_price,
+                    best_time=best_time,
+                    current_time=current_time,
+                    direction=direction,
+            ):
+                break
+
+            favorable_delta = (
+                    direction
+                    *
+                    (
+                            current_price
+                            -
+                            best_price
+                    )
+            )
+
+            if favorable_delta > 0:
+                best_idx = scan_idx
+                best_price = current_price
+                best_time = current_time
+
+            scan_idx += 1
+
+        return best_idx
+
+    def _find_rewind_exit_idx(
+            self,
+            prices,
+            times,
+            start_idx,
+            seed_end_idx,
+            direction,
+    ):
+        """
+        在 Candidate 原始右端 R0 前的
+        max_rewind_seconds 范围内，
+        寻找一个候选的更优退出价格点。
+
+        uptrend:
+            找该范围最高价。
+
+        downtrend:
+            找该范围最低价。
+
+        注意：
+        这里只负责寻找 rewind candidate。
+
+        是否真正执行左收缩，
+        由上层比较该价格是否严格优于 R0 决定。
+
+        如果只是与 R0 同价，
+        不执行左收缩。
+        """
+
+        seed_end_time = (
+            times.iloc[seed_end_idx]
+        )
+
+        rewind_start_time = (
+                seed_end_time
+                -
+                pd.Timedelta(
+                    seconds=self.max_rewind_seconds
+                )
+        )
+
+        rewind_start_idx = (
+            times.searchsorted(
+                rewind_start_time,
+                side="left"
+            )
+        )
+
+        # 不允许越过 B
+        rewind_start_idx = max(
+            start_idx,
+            rewind_start_idx
+        )
+
+        candidate_prices = prices[
+            rewind_start_idx:
+            seed_end_idx + 1
+        ]
+
+        if direction > 0:
+
+            offset = int(
+                np.argmax(
+                    candidate_prices
+                )
+            )
+
+        else:
+
+            offset = int(
+                np.argmin(
+                    candidate_prices
+                )
+            )
+
         return (
-            abs(prices[-1] - prices[0])
-            /
-            self.tick_size
+                rewind_start_idx
+                +
+                offset
         )
 
     def check_window(
@@ -649,7 +886,13 @@ class TrendLabeler:
             times
     ):
         """
-        判断窗口是否满足趋势候选
+        Candidate Detection。
+
+        判断一个窗口是否足以证明：
+        这里已经发生了一段值得标注的单边趋势。
+
+        这里只负责发现 Candidate，
+        不参与后续最佳退出点 E 的搜索。
         """
 
         if len(prices) < 2:
@@ -712,93 +955,102 @@ class TrendLabeler:
 
     def check_extension(
             self,
-            prices,
-            recent_prices,
-            recent_times
+            start_price,
+            best_price,
+            current_price,
+            best_time,
+            current_time,
+            direction,
     ):
         """
-        判断趋势是否允许继续扩展。
+        判断当前 oracle exit 是否还允许继续向右搜索。
 
-        recent_prices / recent_times：
-            当前末端最近一个 window_seconds 的窗口。
+        注意：
+        这里不再判断：
+        - return_tick
+        - path_efficiency
+        - linear_r2
+        - slope
 
-        扩展要求：
-        1. 最近窗口仍然满足完整趋势条件
-           - return
-           - path efficiency
-           - R2
-           - slope
-        2. 整个累计趋势段没有发生过大回撤
+        因为 Candidate Detection 已经证明趋势存在。
+
+        这里只判断：
+        1. 距离上一次最佳退出价是否停滞太久；
+        2. 从当前最佳退出价是否发生过大回撤。
         """
 
-        if len(prices) < 2:
-            return False
+        # =====================================
+        # 1. 多久没有得到更好的退出价格
+        # =====================================
 
-        # ---------------------------------
-        # 最近一个时间窗必须仍然是趋势
-        # ---------------------------------
+        stall_seconds = (
+                current_time
+                -
+                best_time
+        ).total_seconds()
 
-        if not self.check_window(
-                recent_prices,
-                recent_times
+        if (
+                stall_seconds
+                >
+                self.max_stall_seconds
         ):
             return False
 
-        # ---------------------------------
-        # 整段最大回撤限制
-        # ---------------------------------
+        # =====================================
+        # 2. 当前相对最佳价格的回撤
+        # =====================================
+        #
+        # up:
+        # best=110 current=108
+        # direction=+1
+        # drawdown=2 = 10 tick
+        #
+        # down:
+        # best=90 current=92
+        # direction=-1
+        # drawdown=2
 
-        start = prices[0]
+        drawdown_tick = round(direction * (best_price - current_price) / self.tick_size, 8)
 
-        direction = np.sign(
-            prices[-1] - start
+        drawdown_tick = max(
+            0.0,
+            drawdown_tick
         )
 
-        if direction > 0:
+        favorable_move_tick = round(direction * (best_price - start_price) / self.tick_size, 8)
 
-            peak = np.maximum.accumulate(
-                prices
-            )
-
-            drawdown = (
-                    peak - prices
-            )
-
-        elif direction < 0:
-
-            trough = np.minimum.accumulate(
-                prices
-            )
-
-            drawdown = (
-                    prices - trough
-            )
-
-        else:
+        if favorable_move_tick <= 0:
             return False
 
-        max_dd = np.max(
-            drawdown
-        )
-
-        trend_move = abs(
-            prices[-1] - start
-        )
-
-        if trend_move == 0:
-            return False
+        # =====================================
+        # 3. 绝对回撤限制
+        # =====================================
 
         if (
-                max_dd
+                drawdown_tick
                 >
-                trend_move
-                *
+                self.max_drawdown_tick
+        ):
+            return False
+
+        # =====================================
+        # 4. 相对回撤限制
+        # =====================================
+
+        drawdown_ratio = (
+                drawdown_tick
+                /
+                favorable_move_tick
+        )
+
+        if (
+                drawdown_ratio
+                >
                 self.max_drawdown_ratio
         ):
             return False
 
         return True
-
 
     def _label_segment(self, df):
 
@@ -840,15 +1092,6 @@ class TrendLabeler:
         stride_delta = pd.Timedelta(
             seconds=self.stride_seconds
         )
-
-        extend_step_delta = pd.Timedelta(
-            seconds=self.extend_step_seconds
-        )
-
-        max_extend_delta = pd.Timedelta(
-            seconds=self.max_extend_seconds
-        )
-
 
         start_time = times.iloc[0]
 
@@ -940,128 +1183,46 @@ class TrendLabeler:
 
                 continue
 
+            # =====================================
+            # 3. Candidate 已成立
+            # =====================================
+            seed_end_idx = (
+                    seed_end_exclusive - 1
+            )
 
-            # 找到了趋势 seed
-            #
-            # seed_end_exclusive 是右开区间，
-            # 所以真实最后一条数据是 -1
+            # Candidate 的方向仍由 B -> R0 决定。
+            # min_return_tick > 0，
+            # 正常情况下这里一定非 0。
+
+            direction = np.sign(
+                seed_prices[-1]
+                -
+                seed_prices[0]
+            )
+
+            if direction == 0:
+                current_time += (
+                    stride_delta
+                )
+
+                continue
+
+            # =====================================
+            # 4. 搜索最佳退出点 E
+            # =====================================
+
             end_idx = (
-                seed_end_exclusive - 1
+                self._find_best_exit_idx(
+                    prices=prices,
+                    times=times,
+                    start_idx=start_idx,
+                    seed_end_idx=seed_end_idx,
+                    direction=direction,
+                )
             )
 
-
             # =====================================
-            # 3. 基于真实时间向右扩展
-            # =====================================
-
-            max_end_time = (
-                seed_end_time
-                +
-                max_extend_delta
-            )
-
-            candidate_end_time = (
-                seed_end_time
-                +
-                extend_step_delta
-            )
-
-
-            while (
-                candidate_end_time
-                <=
-                max_end_time
-                and
-                end_idx < n - 1
-            ):
-
-                # 找到 candidate_end_time 之前
-                # 所有实际存在的 tick
-                candidate_end_exclusive = (
-                    times.searchsorted(
-                        candidate_end_time,
-                        side="right"
-                    )
-                )
-
-                candidate_end_idx = (
-                    candidate_end_exclusive
-                    -
-                    1
-                )
-
-
-                # 这一时间步内没有新的 tick
-                #
-                # 例如：
-                # 上一条数据 09:30:10.2
-                # 下一条数据 09:30:11.2
-                #
-                # 即使 extend_step_seconds=0.5，
-                # 09:30:10.7 时也不会凭空认为
-                # 存在一条数据。
-                if (
-                    candidate_end_idx
-                    <=
-                    end_idx
-                ):
-
-                    candidate_end_time += (
-                        extend_step_delta
-                    )
-
-                    continue
-
-                test_prices = prices[
-                    start_idx:
-                    candidate_end_exclusive
-                ]
-
-                # 当前末端最近一个 window_seconds
-                recent_start_time = (
-                        candidate_end_time
-                        -
-                        window_delta
-                )
-
-                recent_start_idx = (
-                    times.searchsorted(
-                        recent_start_time,
-                        side="left"
-                    )
-                )
-
-                recent_prices = prices[
-                    recent_start_idx:
-                    candidate_end_exclusive
-                ]
-
-                recent_times = times.iloc[
-                    recent_start_idx:
-                    candidate_end_exclusive
-                ]
-
-                if not self.check_extension(
-                        test_prices,
-                        recent_prices,
-                        recent_times
-                ):
-                    break
-
-
-                # 扩展成功
-                end_idx = (
-                    candidate_end_idx
-                )
-
-
-                candidate_end_time += (
-                    extend_step_delta
-                )
-
-
-            # =====================================
-            # 4. 写 BIO 风格标签
+            # 5. 写 BIO 风格标签
             # =====================================
 
             df.loc[
@@ -1069,40 +1230,33 @@ class TrendLabeler:
                 "trend_tag"
             ] = "B_TREND"
 
-
             if (
-                end_idx
-                >
-                start_idx + 1
+                    end_idx
+                    >
+                    start_idx + 1
             ):
-
                 df.loc[
                     start_idx + 1:
                     end_idx - 1,
                     "trend_tag"
                 ] = "I_TREND"
 
-
             df.loc[
                 end_idx,
                 "trend_tag"
             ] = "E_TREND"
 
-
             # =====================================
-            # 5. 跳过已经识别出来的整个事件
+            # 6. 下一轮从本次 oracle E 后继续扫描
             # =====================================
 
             if end_idx >= n - 1:
                 break
 
-
-            # 这里同样基于真实时间推进，
-            # 而不是 end_idx + 1 等价于 0.5 秒
             current_time = (
-                times.iloc[end_idx]
-                +
-                stride_delta
+                    times.iloc[end_idx]
+                    +
+                    stride_delta
             )
 
 
@@ -1110,13 +1264,19 @@ class TrendLabeler:
 
     def label(self, df):
         """
-        对一天数据进行趋势打标。
+        E_TREND:
+            在 Candidate 已经成立的前提下，
+            对 Candidate 原始右边界进行判断：
 
-        自动隔离：
-        - instrument
-        - AM / PM
+            - 如果尾部已经发生价格回吐，
+              在有限时间范围内向左收缩，
+              得到相对更优的退出点；
 
-        不允许趋势跨 session。
+            - 如果 Candidate 结束时仍处于
+              当前最佳 favorable price，
+              才允许继续向右搜索更好的退出点。
+
+            左收缩与右扩展互斥。
         """
 
         result = (
