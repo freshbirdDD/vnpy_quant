@@ -589,12 +589,20 @@ class TrendLabeler:
 
     def __init__(
             self,
+            # 初始候选单边趋势的窗口宽度(s)
             window_seconds=10.0,
             stride_seconds=0.5,
-            min_return_tick=10.0,
+            # 一跳的点数 例如IF300的都是0.2
             tick_size=0.2,
+
+            # 候选窗口筛选超参组合
+            # 候选窗口的最小涨幅
+            min_return_tick=10.0,
+            # 惩罚上下震荡的行为
             path_efficiency_threshold=0.55,
+            # 评估线性相关性
             linear_r2_threshold=0.65,
+            # 线性拟合斜率，暂时不做单独限制
             min_abs_slope_tick_per_second=0.0,
 
             # Candidate 尾部相对最近 local best
